@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Electron-builder temporary files
+dist/
+!dist/
+dist/*
+!dist/*.exe
+!dist/*.deb
+!dist/*.AppImage
+!dist/*.dmg
+!dist/latest*.yml
+
+
+# Ignore build artifacts and logs
+*.log
+cravings-log.txt
+builder-debug.yml
+builder-effective-config.yml
