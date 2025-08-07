@@ -7,7 +7,10 @@
   "scripts": {
     "start": "electron .",
     "pack": "electron-builder",
-    "ship": "electron-builder --publish always"
+    "ship": "electron-builder --publish always",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
   },
   "author": "NoTime <notimeservices@gmail.com>",
   "license": "ISC",
