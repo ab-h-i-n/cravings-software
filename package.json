@@ -14,13 +14,6 @@
   },
   "author": "NoTime <notimeservices@gmail.com>",
   "license": "ISC",
-  "devDependencies": {
-    "electron": "^29.1.5",
-    "electron-builder": "^24.13.3"
-  },
-  "dependencies": {
-    "electron-updater": "^6.6.2"
-  },
   "build": {
     "appId": "live.cravings.desktop",
     "productName": "Cravings.live",
@@ -53,5 +46,12 @@
       "icon": "build/icon.png",
       "maintainer": "NoTime <notimeservices@gmail.com>"
     }
+  },
+  "devDependencies": {
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12"
+  },
+  "dependencies": {
+    "electron-updater": "^6.6.2"
   }
 }

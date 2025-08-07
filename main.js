@@ -91,7 +91,7 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadURL('https://cravings.live');
+  mainWindow.loadURL('https://test.cravings.live');
 
   // --- BACKGROUND PRINTING HANDLER ---
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
