@@ -3,13 +3,12 @@ const path = require('path');
 const fs = require('fs');
 const { autoUpdater } = require('electron-updater');
 
+// 1. Import electron-log
+const log = require('electron-log');
+
 let mainWindow;
 
 // --- ERROR LOGGING ---
-/**
- * Logs an error message to cravings-log.txt on the desktop.
- * @param {string} error The error message to log.
- */
 function logError(error) {
   try {
     const logPath = path.join(app.getPath('desktop'), 'cravings-log.txt');
@@ -24,12 +23,18 @@ function logError(error) {
 
 // --- AUTO-UPDATE LOGIC ---
 function checkForUpdates() {
-  // Listen for update errors
+  
+  // 2. Configure electron-updater to use electron-log
+  autoUpdater.logger = log;
+  autoUpdater.logger.transports.file.level = 'info';
+  log.info('App starting...');
+
+  // The rest of your event listeners are correct
   autoUpdater.on('error', (err) => {
     logError('Auto-update error: ' + (err.message || err));
+    mainWindow.webContents.send('update-status', { success: false, message: 'Error during update.' });
   });
 
-  // Listen for when an update is available
   autoUpdater.on('update-available', (info) => {
     dialog.showMessageBox({
       type: 'info',
@@ -37,30 +42,25 @@ function checkForUpdates() {
       message: `A new version (${info.version}) of Cravings.live is available. Do you want to download it now?`,
       buttons: ['Yes', 'No']
     }).then(result => {
-      if (result.response === 0) { // If 'Yes' is clicked
+      if (result.response === 0) {
         autoUpdater.downloadUpdate();
         mainWindow.webContents.send('update-status', { success: true, message: 'Downloading update... 🚀' });
       }
     });
   });
   
-  // Listen for when the app is already on the latest version
   autoUpdater.on('update-not-available', () => {
-    console.log('You are on the latest version.');
-    // You could optionally send a toast notification for this
-    // mainWindow.webContents.send('update-status', { success: true, message: 'You are on the latest version. ✅' });
+    log.info('Update not available.');
   });
 
-  // Track the download progress
   autoUpdater.on('download-progress', (progressObj) => {
     const progressMessage = `Downloaded ${Math.round(progressObj.percent)}%`;
-    mainWindow.setProgressBar(progressObj.percent / 100); // Show progress in the taskbar
+    mainWindow.setProgressBar(progressObj.percent / 100);
     mainWindow.webContents.send('update-status', { success: true, message: progressMessage });
   });
   
-  // Listen for when the update has been fully downloaded
   autoUpdater.on('update-downloaded', (info) => {
-    mainWindow.setProgressBar(-1); // Clear the progress bar
+    mainWindow.setProgressBar(-1);
     dialog.showMessageBox({
       type: 'info',
       title: 'Update Ready',
@@ -82,7 +82,7 @@ function createWindow() {
     width: 1280,
     height: 800,
     title: "Cravings.live",
-    frame: false, // Important for the custom title bar
+    frame: false,
     icon: path.join(__dirname, 'build/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -91,33 +91,26 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadURL('https://www.cravings.live');
+  mainWindow.loadURL('https://cravings.live');
 
   // --- BACKGROUND PRINTING HANDLER ---
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    // Intercept URLs for bills or KOTs
     if (url.includes('/bill/') || url.includes('/kot/')) {
       console.log(`Intercepted URL for printing: ${url}`);
 
-      // Create a hidden browser window to load the content
       const backgroundWindow = new BrowserWindow({
         show: false,
         webPreferences: {
-          // Use the main preload script to detect when the content is ready
           preload: path.join(__dirname, 'preload.js'),
         }
       });
 
       backgroundWindow.loadURL(`${url}?print=false`);
-
       const contents = backgroundWindow.webContents;
 
-      // Listen for the 'ready-to-print' message from the preload script
       ipcMain.once('ready-to-print', (event) => {
-        // Ensure the event is coming from our background window
         if (event.sender === contents) {
             console.log(`Printing content from ${url}`);
-            console.log('Background window contents:');
             contents.print({ silent: true, printBackground: false }, (success, failureReason) => {
                 if (success) {
                     console.log('Print job sent successfully.');
@@ -134,28 +127,21 @@ function createWindow() {
                         message: `Print failed: ${failureReason}` 
                     });
                 }
-                // Clean up the background window after printing
-                if (!backgroundWindow.isDestroyed()) {
-                  backgroundWindow.close();
-                }
+                if (!backgroundWindow.isDestroyed()) backgroundWindow.close();
             });
         }
       });
       
-      // Handle cases where the print page fails to load
       contents.on('did-fail-load', (event, errorCode, errorDescription) => {
           const errorMsg = `Failed to load print URL ${url}. Error: ${errorDescription}`;
           console.error(errorMsg);
           logError(errorMsg);
-          if (!backgroundWindow.isDestroyed()) {
-              backgroundWindow.close();
-          }
+          if (!backgroundWindow.isDestroyed()) backgroundWindow.close();
       });
 
-      return { action: 'deny' }; // Prevent a new visible window from opening
+      return { action: 'deny' };
     }
     
-    // Allow all other URLs to open normally
     return { action: 'allow' };
   });
 
@@ -164,7 +150,7 @@ function createWindow() {
   });
 }
 
-// --- IPC LISTENERS FOR WINDOW CONTROLS ---
+// --- Window Control Listeners (Unchanged) ---
 ipcMain.on('minimize-app', () => {
   if (mainWindow) mainWindow.minimize();
 });
@@ -183,19 +169,13 @@ ipcMain.on('close-app', () => {
 // --- APP LIFECYCLE EVENTS ---
 app.on('ready', () => {
   createWindow();
-  
-  // Once the app is ready, check for updates.
   checkForUpdates();
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('activate', () => {
-  if (mainWindow === null) {
-    createWindow();
-  }
+  if (mainWindow === null) createWindow();
 });
