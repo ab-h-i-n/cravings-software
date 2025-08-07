@@ -20,6 +20,8 @@
     "files": [
       "main.js",
       "preload.js",
+      "settings-preload.js",
+      "print-settings.html",
       "build/**/*"
     ],
     "directories": {
