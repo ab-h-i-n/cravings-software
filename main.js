@@ -50,7 +50,7 @@ function checkForUpdates() {
   });
 
   autoUpdater.on("download-progress", (progressObj) => {
-    const progressMessage = `Downloaded ${Math.round(progressObj.percent)}%`;
+    const progressMessage = `Downloading new update - ${Math.round(progressObj.percent)}%`;
     mainWindow.setProgressBar(progressObj.percent / 100);
     mainWindow.webContents.send("update-status", {
       success: true,
