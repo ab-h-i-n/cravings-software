@@ -1,44 +1,77 @@
-const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, session } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { autoUpdater } = require("electron-updater");
-
-// 1. Import electron-log
 const log = require("electron-log");
 
 let mainWindow;
+let settingsWindow;
 
+//================================================================//
+// --- PERSISTENT PRINT SETTINGS ---
+//================================================================//
+
+const settingsPath = path.join(app.getPath("userData"), "print-settings.json");
+
+const defaultSettings = {
+  width: 88,
+  height: 279,
+  scaleFactor: 1.0,
+};
+
+let printSettings = loadSettings();
+
+function loadSettings() {
+  try {
+    if (fs.existsSync(settingsPath)) {
+      const settingsData = fs.readFileSync(settingsPath, "utf-8");
+      return { ...defaultSettings, ...JSON.parse(settingsData) };
+    }
+  } catch (error) {
+    log.error("Error loading settings, falling back to defaults:", error);
+  }
+  return defaultSettings;
+}
+
+function saveSettings(newSettings) {
+  try {
+    fs.writeFileSync(settingsPath, JSON.stringify(newSettings, null, 2));
+    printSettings = newSettings;
+    log.info("Print settings saved to:", settingsPath);
+  } catch (error) {
+    log.error("Error saving settings:", error);
+  }
+}
+
+//================================================================//
 // --- ERROR LOGGING ---
+//================================================================//
+
 function logError(error) {
   try {
     const logPath = path.join(app.getPath("desktop"), "cravings-log.txt");
     const timestamp = new Date().toISOString();
     const logMessage = `${timestamp} - ERROR: ${error.toString()}\n\n`;
     fs.appendFileSync(logPath, logMessage);
-    console.error(`Error logged to ${logPath}`);
   } catch (logWriteError) {
-    console.error("Fatal: Could not write to log file.", logWriteError);
+    log.error("Fatal: Could not write to log file.", logWriteError);
   }
 }
 
-// --- AUTO-UPDATE LOGIC ---
+//================================================================//
+// --- AUTO-UPDATER ---
+//================================================================//
+
 function checkForUpdates() {
-  // 2. Configure electron-updater to use electron-log
   autoUpdater.logger = log;
   autoUpdater.logger.transports.file.level = "info";
   log.info("App starting...");
 
-  // The rest of your event listeners are correct
   autoUpdater.on("error", (err) => {
     logError("Auto-update error: " + (err.message || err));
-    mainWindow.webContents.send("update-status", {
-      success: false,
-      message: "Error during update.",
-    });
   });
 
   autoUpdater.on("update-available", (info) => {
-    autoUpdater.downloadUpdate();
     mainWindow.webContents.send("update-status", {
       success: true,
       message: "Downloading update... 🚀",
@@ -50,12 +83,7 @@ function checkForUpdates() {
   });
 
   autoUpdater.on("download-progress", (progressObj) => {
-    const progressMessage = `Downloading new update - ${Math.round(progressObj.percent)}%`;
     mainWindow.setProgressBar(progressObj.percent / 100);
-    mainWindow.webContents.send("update-status", {
-      success: true,
-      message: progressMessage,
-    });
   });
 
   autoUpdater.on("update-downloaded", (info) => {
@@ -72,16 +100,67 @@ function checkForUpdates() {
       });
   });
 
-  // Initiate the check for updates
   autoUpdater.checkForUpdates();
 }
 
-// --- MAIN APPLICATION WINDOW ---
+//================================================================//
+// --- BACKGROUND PRINTING ---
+//================================================================//
+
+function startBackgroundPrint(printUrl) {
+  log.info(`Starting print for ${printUrl} with stored settings:`, printSettings);
+  const backgroundWindow = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+    },
+  });
+
+  backgroundWindow.loadURL(`${printUrl}?print=false`);
+  const contents = backgroundWindow.webContents;
+
+  ipcMain.once("ready-to-print", (event) => {
+    if (event.sender === contents) {
+      const printOptions = {
+        silent: true,
+        printBackground: false,
+        pageSize: {
+          width: Math.round(printSettings.width * 1000), // mm to micrometers
+          height: Math.round(printSettings.height * 1000), // mm to micrometers
+        },
+        margins: { top: 0, bottom: 0, left: 0, right: 0 },
+        scaleFactor: parseFloat(printSettings.scaleFactor),
+      };
+
+      contents.print(printOptions, (success, failureReason) => {
+        if (success) {
+          mainWindow.webContents.send("print-status", { success: true, message: "Print job sent! 👍" });
+        } else {
+          const msg = `Print failed: ${failureReason}`;
+          logError(msg);
+          mainWindow.webContents.send("print-status", { success: false, message: msg });
+        }
+        if (!backgroundWindow.isDestroyed()) backgroundWindow.close();
+      });
+    }
+  });
+
+  contents.on("did-fail-load", (event, errorCode, errorDescription) => {
+    const errorMsg = `Failed to load print URL ${printUrl}. Error: ${errorDescription}`;
+    logError(errorMsg);
+    if (!backgroundWindow.isDestroyed()) backgroundWindow.close();
+  });
+}
+
+//================================================================//
+// --- MAIN WINDOW CREATION ---
+//================================================================//
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
-    title: "Cravings.live",
+    title: "Cravings",
     frame: false,
     icon: path.join(__dirname, "build/icon.png"),
     webPreferences: {
@@ -93,83 +172,82 @@ function createWindow() {
 
   mainWindow.loadURL("https://cravings.live");
 
-  // --- BACKGROUND PRINTING HANDLER ---
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.includes("/bill/") || url.includes("/kot/")) {
-      console.log(`Intercepted URL for printing: ${url}`);
-
-      const backgroundWindow = new BrowserWindow({
-        show: false,
-        webPreferences: {
-          preload: path.join(__dirname, "preload.js"),
-        },
-      });
-
-      backgroundWindow.loadURL(`${url}?print=false`);
-      const contents = backgroundWindow.webContents;
-
-      ipcMain.once("ready-to-print", (event) => {
-        if (event.sender === contents) {
-          console.log(`Printing content from ${url}`);
-          contents.print(
-            { silent: true, printBackground: false },
-            (success, failureReason) => {
-              if (success) {
-                console.log("Print job sent successfully.");
-                mainWindow.webContents.send("print-status", {
-                  success: true,
-                  message: "Print job sent successfully! 👍",
-                });
-              } else {
-                const printErrorMsg = `Print failed for URL ${url}. Reason: ${failureReason}`;
-                console.error(printErrorMsg);
-                logError(printErrorMsg);
-                mainWindow.webContents.send("print-status", {
-                  success: false,
-                  message: `Print failed: ${failureReason}`,
-                });
-              }
-              if (!backgroundWindow.isDestroyed()) backgroundWindow.close();
-            }
-          );
-        }
-      });
-
-      contents.on("did-fail-load", (event, errorCode, errorDescription) => {
-        const errorMsg = `Failed to load print URL ${url}. Error: ${errorDescription}`;
-        console.error(errorMsg);
-        logError(errorMsg);
-        if (!backgroundWindow.isDestroyed()) backgroundWindow.close();
-      });
-
+      startBackgroundPrint(url);
       return { action: "deny" };
     }
-
     return { action: "allow" };
   });
 
+  mainWindow.on('maximize', () => mainWindow.webContents.send('window-state-changed', true));
+  mainWindow.on('unmaximize', () => mainWindow.webContents.send('window-state-changed', false));
+  
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
 }
 
-// --- Window Control Listeners (Unchanged) ---
-ipcMain.on("minimize-app", () => {
-  if (mainWindow) mainWindow.minimize();
-});
+//================================================================//
+// --- IPC EVENT LISTENERS ---
+//================================================================//
 
+ipcMain.on("minimize-app", () => mainWindow?.minimize());
 ipcMain.on("maximize-app", () => {
   if (mainWindow) {
-    mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize();
+    const isMaximized = mainWindow.isMaximized();
+    isMaximized ? mainWindow.unmaximize() : mainWindow.maximize();
   }
 });
+ipcMain.on("close-app", () => mainWindow?.close());
 
-ipcMain.on("close-app", () => {
-  if (mainWindow) mainWindow.close();
+ipcMain.on('open-print-settings', () => {
+  if (settingsWindow) {
+    settingsWindow.focus();
+    return;
+  }
+  settingsWindow = new BrowserWindow({
+    width: 450,
+    height: 350,
+    title: "Print Settings",
+    parent: mainWindow,
+    modal: true,
+    show: false,
+    frame: false,
+    webPreferences: {
+      preload: path.join(__dirname, "settings-preload.js"),
+      contextIsolation: true,
+    },
+  });
+
+  const settingsPageUrl = new URL(`file://${path.join(__dirname, 'print-settings.html')}`);
+  settingsPageUrl.searchParams.append('width', printSettings.width);
+  settingsPageUrl.searchParams.append('height', printSettings.height);
+  settingsPageUrl.searchParams.append('scaleFactor', printSettings.scaleFactor);
+
+  settingsWindow.loadURL(settingsPageUrl.href);
+  settingsWindow.once('ready-to-show', () => settingsWindow.show());
+  settingsWindow.on("closed", () => {
+    settingsWindow = null;
+  });
 });
 
-// --- APP LIFECYCLE EVENTS ---
+ipcMain.on('save-print-settings', (event, newSettings) => {
+  saveSettings(newSettings);
+  if (settingsWindow) settingsWindow.close();
+});
+
+ipcMain.on('cancel-print-settings', () => {
+  if (settingsWindow) settingsWindow.close();
+});
+
+//================================================================//
+// --- APP LIFECYCLE ---
+//================================================================//
+
 app.on("ready", () => {
+
+
   createWindow();
   checkForUpdates();
 });
