@@ -34,8 +34,8 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "your-github-username",
-      "repo": "your-github-repo-name"
+      "owner": "ab-h-i-n",
+      "repo": "cravings-software"
     },
     "win": {
       "target": "nsis",
