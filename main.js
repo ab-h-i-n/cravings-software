@@ -122,7 +122,7 @@ function startBackgroundPrint(printUrl) {
   ipcMain.once("ready-to-print", (event) => {
     if (event.sender === contents) {
       const printOptions = {
-        silent: true,
+        silent: false,
         printBackground: false,
         pageSize: {
           width: Math.round(printSettings.width * 1000), // mm to micrometers
