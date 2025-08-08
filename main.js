@@ -109,47 +109,76 @@ function checkForUpdates() {
 
 function startBackgroundPrint(printUrl) {
   log.info(`Starting print for ${printUrl} with stored settings:`, printSettings);
+  
+  // Create a new window for each print job.
   const backgroundWindow = new BrowserWindow({
-    show: false,
+    show: false, // Keep it hidden
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
     },
   });
 
-  backgroundWindow.loadURL(`${printUrl}?print=false`);
   const contents = backgroundWindow.webContents;
 
-  ipcMain.once("ready-to-print", (event) => {
-    if (event.sender === contents) {
-      const printOptions = {
-        silent: false,
-        printBackground: false,
-        pageSize: {
-          width: Math.round(printSettings.width * 1000), // mm to micrometers
-          height: Math.round(printSettings.height * 1000), // mm to micrometers
-        },
-        margins: { top: 0, bottom: 0, left: 0, right: 0 },
-        scaleFactor: parseFloat(printSettings.scaleFactor),
-      };
-
-      contents.print(printOptions, (success, failureReason) => {
-        if (success) {
-          mainWindow.webContents.send("print-status", { success: true, message: "Print job sent! 👍" });
-        } else {
-          const msg = `Print failed: ${failureReason}`;
-          logError(msg);
-          mainWindow.webContents.send("print-status", { success: false, message: msg });
-        }
-        if (!backgroundWindow.isDestroyed()) backgroundWindow.close();
-      });
+  // IMPORTANT: Create a dedicated function to clean up the window.
+  const cleanup = () => {
+    // Clear the timeout to prevent it from closing an already closed window.
+    clearTimeout(printTimeout);
+    // Ensure the window exists and is not already destroyed before closing.
+    if (backgroundWindow && !backgroundWindow.isDestroyed()) {
+      backgroundWindow.close();
     }
+  };
+
+  // Failsafe: If printing takes too long, close the window to prevent leaks.
+  const printTimeout = setTimeout(() => {
+    log.error(`Print job for ${printUrl} timed out after 20 seconds.`);
+    cleanup();
+  }, 20000); // 20-second timeout
+
+  ipcMain.once("ready-to-print", (event) => {
+    // Ensure the event is from the correct window.
+    if (event.sender !== contents) {
+      return;
+    }
+      
+    log.info(`Printing content from ${printUrl}`);
+    const printOptions = {
+      silent: true, // `false` shows the OS print dialog, which is better for debugging.
+      printBackground: false,
+      pageSize: {
+        width: Math.round(printSettings.width * 1000), // mm to micrometers
+        height: Math.round(printSettings.height * 1000), // mm to micrometers
+      },
+      margins: { top: 0, bottom: 0, left: 0, right: 0 },
+      scaleFactor: parseFloat(printSettings.scaleFactor),
+    };
+
+    contents.print(printOptions, (success, failureReason) => {
+      if (success) {
+        log.info("Print job successfully sent to the spooler.");
+        mainWindow?.webContents.send("print-status", { success: true, message: "Print job sent! 👍" });
+      } else {
+        // Don't log "user cancelled" as an error.
+        if (failureReason !== "cancelled") {
+            log.error(`Print failed: ${failureReason}`);
+        }
+        mainWindow?.webContents.send("print-status", { success: false, message: `Print failed: ${failureReason}` });
+      }
+
+      // **THE CRITICAL FIX**
+      // Use a longer delay before cleaning up. 500ms may be too short for some drivers.
+      setTimeout(cleanup, 1500); // Increased delay to 1.5 seconds
+    });
   });
 
   contents.on("did-fail-load", (event, errorCode, errorDescription) => {
-    const errorMsg = `Failed to load print URL ${printUrl}. Error: ${errorDescription}`;
-    logError(errorMsg);
-    if (!backgroundWindow.isDestroyed()) backgroundWindow.close();
+    log.error(`Failed to load print URL ${printUrl}. Error: ${errorDescription}`);
+    // Clean up immediately if the URL fails to load.
+    cleanup();
   });
+
+  backgroundWindow.loadURL(`${printUrl}?print=false`);
 }
 
 //================================================================//
