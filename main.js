@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, session } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { autoUpdater } = require("electron-updater");
@@ -17,6 +17,8 @@ const defaultSettings = {
   width: 88,
   height: 279,
   scaleFactor: 1.0,
+  silentPrinting: true,
+  deviceName: null, // Will use system default if null
 };
 
 let printSettings = loadSettings();
@@ -25,7 +27,15 @@ function loadSettings() {
   try {
     if (fs.existsSync(settingsPath)) {
       const settingsData = fs.readFileSync(settingsPath, "utf-8");
-      return { ...defaultSettings, ...JSON.parse(settingsData) };
+      const loaded = JSON.parse(settingsData);
+      // Ensure all settings are correctly typed
+      return {
+        width: parseFloat(loaded.width) || defaultSettings.width,
+        height: parseFloat(loaded.height) || defaultSettings.height,
+        scaleFactor: parseFloat(loaded.scaleFactor) || defaultSettings.scaleFactor,
+        silentPrinting: typeof loaded.silentPrinting === 'boolean' ? loaded.silentPrinting : defaultSettings.silentPrinting,
+        deviceName: loaded.deviceName || defaultSettings.deviceName,
+      };
     }
   } catch (error) {
     log.error("Error loading settings, falling back to defaults:", error);
@@ -36,7 +46,7 @@ function loadSettings() {
 function saveSettings(newSettings) {
   try {
     fs.writeFileSync(settingsPath, JSON.stringify(newSettings, null, 2));
-    printSettings = newSettings;
+    printSettings = newSettings; // Update in-memory settings
     log.info("Print settings saved to:", settingsPath);
   } catch (error) {
     log.error("Error saving settings:", error);
@@ -72,7 +82,7 @@ function checkForUpdates() {
   });
 
   autoUpdater.on("update-available", (info) => {
-    mainWindow.webContents.send("update-status", {
+    mainWindow?.webContents.send("update-status", {
       success: true,
       message: "Downloading update... 🚀",
     });
@@ -83,11 +93,11 @@ function checkForUpdates() {
   });
 
   autoUpdater.on("download-progress", (progressObj) => {
-    mainWindow.setProgressBar(progressObj.percent / 100);
+    mainWindow?.setProgressBar(progressObj.percent / 100);
   });
 
   autoUpdater.on("update-downloaded", (info) => {
-    mainWindow.setProgressBar(-1);
+    mainWindow?.setProgressBar(-1);
     dialog
       .showMessageBox({
         type: "info",
@@ -110,9 +120,8 @@ function checkForUpdates() {
 function startBackgroundPrint(printUrl) {
   log.info(`Starting print for ${printUrl} with stored settings:`, printSettings);
   
-  // Create a new window for each print job.
   const backgroundWindow = new BrowserWindow({
-    show: false, // Keep it hidden
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
     },
@@ -120,61 +129,52 @@ function startBackgroundPrint(printUrl) {
 
   const contents = backgroundWindow.webContents;
 
-  // IMPORTANT: Create a dedicated function to clean up the window.
   const cleanup = () => {
-    // Clear the timeout to prevent it from closing an already closed window.
     clearTimeout(printTimeout);
-    // Ensure the window exists and is not already destroyed before closing.
     if (backgroundWindow && !backgroundWindow.isDestroyed()) {
       backgroundWindow.close();
     }
   };
 
-  // Failsafe: If printing takes too long, close the window to prevent leaks.
   const printTimeout = setTimeout(() => {
     log.error(`Print job for ${printUrl} timed out after 20 seconds.`);
     cleanup();
-  }, 20000); // 20-second timeout
+  }, 20000);
 
   ipcMain.once("ready-to-print", (event) => {
-    // Ensure the event is from the correct window.
-    if (event.sender !== contents) {
-      return;
-    }
+    if (event.sender !== contents) return;
       
     log.info(`Printing content from ${printUrl}`);
+    
     const printOptions = {
-      silent: true, // `false` shows the OS print dialog, which is better for debugging.
+      silent: printSettings.silentPrinting,
       printBackground: false,
       pageSize: {
-        width: Math.round(printSettings.width * 1000), // mm to micrometers
-        height: Math.round(printSettings.height * 1000), // mm to micrometers
+        width: Math.round(printSettings.width * 1000),
+        height: Math.round(printSettings.height * 1000),
       },
       margins: { top: 0, bottom: 0, left: 0, right: 0 },
-      scaleFactor: parseFloat(printSettings.scaleFactor),
+      scaleFactor: printSettings.scaleFactor,
     };
+    
+    if (printSettings.deviceName) {
+      printOptions.deviceName = printSettings.deviceName;
+    }
 
     contents.print(printOptions, (success, failureReason) => {
       if (success) {
-        log.info("Print job successfully sent to the spooler.");
+        log.info("Print job successfully sent to spooler.");
         mainWindow?.webContents.send("print-status", { success: true, message: "Print job sent! 👍" });
       } else {
-        // Don't log "user cancelled" as an error.
-        if (failureReason !== "cancelled") {
-            log.error(`Print failed: ${failureReason}`);
-        }
+        if (failureReason !== "cancelled") log.error(`Print failed: ${failureReason}`);
         mainWindow?.webContents.send("print-status", { success: false, message: `Print failed: ${failureReason}` });
       }
-
-      // **THE CRITICAL FIX**
-      // Use a longer delay before cleaning up. 500ms may be too short for some drivers.
-      setTimeout(cleanup, 1500); // Increased delay to 1.5 seconds
+      setTimeout(cleanup, 1500);
     });
   });
 
   contents.on("did-fail-load", (event, errorCode, errorDescription) => {
     log.error(`Failed to load print URL ${printUrl}. Error: ${errorDescription}`);
-    // Clean up immediately if the URL fails to load.
     cleanup();
   });
 
@@ -209,8 +209,8 @@ function createWindow() {
     return { action: "allow" };
   });
 
-  mainWindow.on('maximize', () => mainWindow.webContents.send('window-state-changed', true));
-  mainWindow.on('unmaximize', () => mainWindow.webContents.send('window-state-changed', false));
+  mainWindow.on('maximize', () => mainWindow?.webContents.send('window-state-changed', true));
+  mainWindow.on('unmaximize', () => mainWindow?.webContents.send('window-state-changed', false));
   
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -223,12 +223,20 @@ function createWindow() {
 
 ipcMain.on("minimize-app", () => mainWindow?.minimize());
 ipcMain.on("maximize-app", () => {
-  if (mainWindow) {
-    const isMaximized = mainWindow.isMaximized();
-    isMaximized ? mainWindow.unmaximize() : mainWindow.maximize();
+  if (mainWindow?.isMaximized()) {
+    mainWindow.unmaximize();
+  } else {
+    mainWindow?.maximize();
   }
 });
 ipcMain.on("close-app", () => mainWindow?.close());
+
+ipcMain.handle('get-printers', async () => {
+  if (mainWindow) {
+    return await mainWindow.webContents.getPrintersAsync();
+  }
+  return [];
+});
 
 ipcMain.on('open-print-settings', () => {
   if (settingsWindow) {
@@ -236,8 +244,8 @@ ipcMain.on('open-print-settings', () => {
     return;
   }
   settingsWindow = new BrowserWindow({
-    width: 450,
-    height: 350,
+    width: 480,
+    height: 480,
     title: "Print Settings",
     parent: mainWindow,
     modal: true,
@@ -253,6 +261,10 @@ ipcMain.on('open-print-settings', () => {
   settingsPageUrl.searchParams.append('width', printSettings.width);
   settingsPageUrl.searchParams.append('height', printSettings.height);
   settingsPageUrl.searchParams.append('scaleFactor', printSettings.scaleFactor);
+  settingsPageUrl.searchParams.append('silentPrinting', printSettings.silentPrinting);
+  if (printSettings.deviceName) {
+    settingsPageUrl.searchParams.append('deviceName', printSettings.deviceName);
+  }
 
   settingsWindow.loadURL(settingsPageUrl.href);
   settingsWindow.once('ready-to-show', () => settingsWindow.show());
@@ -262,7 +274,14 @@ ipcMain.on('open-print-settings', () => {
 });
 
 ipcMain.on('save-print-settings', (event, newSettings) => {
-  saveSettings(newSettings);
+  const settingsToSave = {
+      width: parseFloat(newSettings.width),
+      height: parseFloat(newSettings.height),
+      scaleFactor: parseFloat(newSettings.scaleFactor),
+      silentPrinting: newSettings.silentPrinting === true,
+      deviceName: newSettings.deviceName || null
+  };
+  saveSettings(settingsToSave);
   if (settingsWindow) settingsWindow.close();
 });
 
@@ -275,8 +294,6 @@ ipcMain.on('cancel-print-settings', () => {
 //================================================================//
 
 app.on("ready", () => {
-
-
   createWindow();
   checkForUpdates();
 });

@@ -8,7 +8,7 @@
       --titlebar-height: 36px;
       --titlebar-bg: #F9F5F0;
       --titlebar-text: #444;
-      --brand-color: #EA580C; /* Updated brand color from your SVG */
+      --brand-color: #EA580C;
       --body-bg: #ffffff;
       --border-color: #d1d1d1;
       --input-focus-glow: rgba(234, 88, 12, 0.2);
@@ -16,6 +16,9 @@
       --button-secondary-bg: #f0f0f0;
       --button-secondary-text: #555;
       --button-secondary-border: #ccc;
+      --status-idle: #22c55e;
+      --status-offline: #ef4444;
+      --status-other: #6b7280;
     }
 
     body {
@@ -25,145 +28,90 @@
       color: var(--text-color);
       padding: 20px;
       padding-top: calc(var(--titlebar-height) + 20px);
-    }
-
-    /* --- Styled Title Bar (Matches Main Window) --- */
-    #custom-title-bar {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: var(--titlebar-height);
-      background-color: var(--titlebar-bg);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      -webkit-app-region: drag;
-    }
-
-    /* --- NEW: Logo and Title Styling --- */
-    .title-logo {
-      display: flex;
-      align-items: center;
-      padding-left: 12px;
-    }
-
-    .title-text {
-      font-weight: 600;
-      font-size: 14px;
-      margin-left: 8px;
-      color: var(--titlebar-text);
-    }
-
-    #close-btn {
-      display: inline-flex;
-      justify-content: center;
-      align-items: center;
-      background: transparent;
-      border: none;
-      color: var(--titlebar-text);
-      width: 46px;
-      height: var(--titlebar-height);
-      cursor: pointer;
-      transition: background-color 0.2s, color 0.2s;
-      outline: none;
-      -webkit-app-region: no-drag;
-    }
-
-    #close-btn:hover {
-      background-color: #E81123;
-      color: #fff;
+      overflow: hidden;
     }
     
-    /* --- Modern Form Styling (Unchanged) --- */
-    .form-wrapper {
-      max-width: 360px;
-      margin: 20px auto;
+    #custom-title-bar {
+      position: fixed; top: 0; left: 0; right: 0; height: var(--titlebar-height);
+      background-color: var(--titlebar-bg); display: flex; justify-content: space-between;
+      align-items: center; -webkit-app-region: drag;
     }
-
-    .form-grid {
-      display: grid;
-      grid-template-columns: 120px 1fr;
-      gap: 18px 10px;
-      align-items: center;
+    .title-logo { display: flex; align-items: center; padding-left: 12px; }
+    .title-text { font-weight: 600; font-size: 14px; margin-left: 8px; color: var(--titlebar-text); }
+    #close-btn {
+      display: inline-flex; justify-content: center; align-items: center; background: transparent;
+      border: none; color: var(--titlebar-text); width: 46px; height: var(--titlebar-height);
+      cursor: pointer; transition: background-color 0.2s, color 0.2s; outline: none; -webkit-app-region: no-drag;
     }
-
-    label {
-      font-weight: 600;
-      font-size: 14px;
-      justify-self: end;
-    }
-
-    input[type="number"] {
-      width: 100%;
-      padding: 10px;
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
-      box-sizing: border-box;
-      font-size: 14px;
+    #close-btn:hover { background-color: #E81123; color: #fff; }
+    
+    .form-wrapper { max-width: 400px; margin: 20px auto; }
+    .form-grid { display: grid; grid-template-columns: 140px 1fr; gap: 20px 10px; align-items: center; }
+    label { font-weight: 600; font-size: 14px; justify-self: end; }
+    input[type="number"], select {
+      width: 100%; padding: 10px; border: 1px solid var(--border-color);
+      border-radius: 6px; box-sizing: border-box; font-size: 14px;
       transition: border-color 0.2s, box-shadow 0.2s;
     }
-
-    input[type="number"]:focus {
-      outline: none;
-      border-color: var(--brand-color);
+    input[type="number"]:focus, select:focus {
+      outline: none; border-color: var(--brand-color);
       box-shadow: 0 0 0 3px var(--input-focus-glow);
     }
-
-    /* --- Styled Buttons (Unchanged) --- */
-    .button-group {
-      margin-top: 30px;
-      display: flex;
-      justify-content: flex-end;
-      gap: 12px;
+    .printer-status {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      margin-right: 8px; vertical-align: middle;
     }
+    .status-idle { background-color: var(--status-idle); }
+    .status-offline { background-color: var(--status-offline); }
+    .status-other { background-color: var(--status-other); }
 
+    .toggle-switch { display: flex; align-items: center; justify-self: start; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: relative; cursor: pointer; width: 44px; height: 24px;
+      background-color: #ccc; border-radius: 24px; transition: background-color 0.2s;
+    }
+    .slider:before {
+      position: absolute; content: ""; height: 18px; width: 18px;
+      left: 3px; bottom: 3px; background-color: white;
+      border-radius: 50%; transition: transform 0.2s;
+    }
+    input:checked + .slider { background-color: var(--brand-color); }
+    input:checked + .slider:before { transform: translateX(20px); }
+
+    .button-group { margin-top: 30px; display: flex; justify-content: flex-end; gap: 12px; }
     .button-group button {
-      padding: 10px 24px;
-      border: 1px solid transparent;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 14px;
-      font-weight: 600;
-      transition: opacity 0.2s;
+      padding: 10px 24px; border: 1px solid transparent; border-radius: 6px;
+      cursor: pointer; font-size: 14px; font-weight: 600; transition: opacity 0.2s;
     }
-
-    .button-group button:hover {
-      opacity: 0.9;
-    }
-
-    #submit-btn {
-      background-color: var(--brand-color);
-      color: white;
-    }
-
-    #cancel-btn {
-      background-color: var(--button-secondary-bg);
-      color: var(--button-secondary-text);
-      border-color: var(--button-secondary-border);
-    }
+    .button-group button:hover { opacity: 0.9; }
+    #submit-btn { background-color: var(--brand-color); color: white; }
+    #cancel-btn { background-color: var(--button-secondary-bg); color: var(--button-secondary-text); border-color: var(--button-secondary-border); }
   </style>
 </head>
 <body>
   
   <div id="custom-title-bar">
     <div class="title-logo">
-      <svg width="17" height="18" viewBox="0 0 17 18" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M11.3255 1.5L9.59708 3.2284C9.18401 3.64982 8.95264 4.2164 8.95264 4.8065C8.95264 5.39661 9.18401 5.96319 9.59708 6.38461L10.9497 7.73727C11.3712 8.15034 11.9378 8.38171 12.5279 8.38171C13.118 8.38171 13.6845 8.15034 14.106 7.73727L15.8344 6.00887" stroke="#EA580C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M10.574 11.2692L1.78168 2.47693C1.48175 2.7708 1.24347 3.12156 1.0808 3.50867C0.918138 3.89578 0.834351 4.31146 0.834351 4.73136C0.834351 5.15126 0.918138 5.56694 1.0808 5.95405C1.24347 6.34117 1.48175 6.69193 1.78168 6.9858L7.26748 12.4716C7.79351 12.9976 8.77044 12.9976 9.37162 12.4716L10.574 11.2692ZM10.574 11.2692L15.8343 16.5296" stroke="#EA580C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M0.879944 16.3793L5.68941 11.645" stroke="#EA580C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M13.5799 3.75446L8.31952 9.0148" stroke="#EA580C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
+      <svg width="17" height="18" viewBox="0 0 17 18" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M11.3255 1.5L9.59708 3.2284C9.18401 3.64982 8.95264 4.2164 8.95264 4.8065C8.95264 5.39661 9.18401 5.96319 9.59708 6.38461L10.9497 7.73727C11.3712 8.15034 11.9378 8.38171 12.5279 8.38171C13.118 8.38171 13.6845 8.15034 14.106 7.73727L15.8344 6.00887" stroke="#EA580C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.574 11.2692L1.78168 2.47693C1.48175 2.7708 1.24347 3.12156 1.0808 3.50867C0.918138 3.89578 0.834351 4.31146 0.834351 4.73136C0.834351 5.15126 0.918138 5.56694 1.0808 5.95405C1.24347 6.34117 1.48175 6.69193 1.78168 6.9858L7.26748 12.4716C7.79351 12.9976 8.77044 12.9976 9.37162 12.4716L10.574 11.2692ZM10.574 11.2692L15.8343 16.5296" stroke="#EA580C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M0.879944 16.3793L5.68941 11.645" stroke="#EA580C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.5799 3.75446L8.31952 9.0148" stroke="#EA580C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="title-text">Print Settings</span>
     </div>
-    <button id="close-btn" title="Close">
-        <svg width="16" height="16" viewBox="0 0 16 16"><path fill="currentColor" d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06z"/></svg>
-    </button>
+    <button id="close-btn" title="Close"><svg width="16" height="16" viewBox="0 0 16 16"><path fill="currentColor" d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.75.75 0 1 1 1.06 1.06L9.06 8l3.22 3.22a.75.75 0 1 1-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 0 1-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06z"/></svg></button>
   </div>
   
   <div class="form-wrapper">
     <form id="print-form">
       <div class="form-grid">
+        
+        <!-- <label for="printer">Printer:</label>
+        <select id="printer">
+          <option value="">System Default</option>
+          </select>
+         -->
+
+         <label for="deviceName">Device Name:</label>
+          <div id="deviceName" ></div>
+
         <label for="width">Width (mm):</label>
         <input type="number" id="width" required>
         
@@ -172,6 +120,12 @@
         
         <label for="scaleFactor">Scale Factor:</label>
         <input type="number" id="scaleFactor" step="0.1" min="0.1" max="2.0" required>
+
+        <label for="silentPrinting">Silent Printing:</label>
+        <label class="toggle-switch">
+          <input type="checkbox" id="silentPrinting">
+          <span class="slider"></span>
+        </label>
       </div>
       
       <div class="button-group">
@@ -185,13 +139,44 @@
     const form = document.getElementById('print-form');
     const cancelBtn = document.getElementById('cancel-btn');
     const closeBtn = document.getElementById('close-btn');
+    const printerSelect = document.getElementById('printer');
 
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
       const initialSettings = window.settingsApi.getInitialSettings();
-      if (initialSettings.width) document.getElementById('width').value = initialSettings.width;
-      if (initialSettings.height) document.getElementById('height').value = initialSettings.height;
-      if (initialSettings.scaleFactor) document.getElementById('scaleFactor').value = initialSettings.scaleFactor;
+      
+      document.getElementById('width').value = initialSettings.width || '';
+      document.getElementById('height').value = initialSettings.height || '';
+      document.getElementById('scaleFactor').value = initialSettings.scaleFactor || '1.0';
+      document.getElementById('silentPrinting').checked = initialSettings.silentPrinting;
+      
+
+      const printers = await window.settingsApi.getPrinters();
+      // console.timeEnd(printers)
+      document.getElementById('deviceName').innerText = printers[0].name || 'N/A';
+
+    //   printers.forEach(p => {
+
+    //     const option = document.createElement('option');
+    //     option.value = p.deviceName;
+        
+    //     let statusClass = 'status-other';
+    //     // Status values: 3=idle, 4=printing, 5=stopped.
+    //     if (p.status === 3 || p.status === 4) {
+    //          statusClass = 'status-idle';
+    //     } else if (p.status !== 5) {
+    //         statusClass = 'status-offline';
+    //     }
+
+    //     option.innerHTML = `<span class="printer-status ${statusClass}"></span>${p.displayName}`;
+        
+    //     if (p.deviceName === initialSettings.deviceName) {
+    //       option.selected = true;
+    //     }
+    //     printerSelect.appendChild(option);
+    //   });
+
     });
+
 
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -199,6 +184,8 @@
         width: document.getElementById('width').value,
         height: document.getElementById('height').value,
         scaleFactor: document.getElementById('scaleFactor').value,
+        // deviceName: document.getElementById('printer').value,
+        silentPrinting: document.getElementById('silentPrinting').checked,
       };
       window.settingsApi.save(newSettings);
     });
