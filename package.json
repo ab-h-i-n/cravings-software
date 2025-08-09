@@ -1,6 +1,6 @@
 {
   "name": "cravings-desktop",
-  "version": "1.0.5",
+  "version": "1.0.8",
   "description": "Desktop application for Cravings.live",
   "homepage": "https://www.cravings.live",
   "main": "main.js",

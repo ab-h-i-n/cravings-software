@@ -82,7 +82,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const titleBar = document.createElement("div");
     titleBar.id = "custom-title-bar";
     titleBar.innerHTML = `
-        <div class="title-text">Cravings.live</div>
+        <div class="title-text">Cravings (v1.0.8)</div>
         <div class="window-controls">
           <button id="minimize-btn" class="window-control-btn" title="Minimize">—</button>
           <button id="maximize-btn" class="window-control-btn" title="Maximize">🗖</button>
