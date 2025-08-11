@@ -112,7 +112,7 @@ function createWindow() {
         if (event.sender === contents) {
           console.log(`Printing content from ${url}`);
           contents.print(
-            { silent: true, printBackground: false },
+            { silent: true, printBackground: false, pageSize : { width: 88000 , height: 28000 } , margins: { marginType: "none"} },
             (success, failureReason) => {
               if (success) {
                 console.log("Print job sent successfully.");
