@@ -91,7 +91,7 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadURL("https://cravings.live");
+  mainWindow.loadURL("https://cravings.live/");
 
   // --- BACKGROUND PRINTING HANDLER ---
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -103,16 +103,19 @@ function createWindow() {
         webPreferences: {
           preload: path.join(__dirname, "preload.js"),
         },
+        parent: mainWindow,
       });
 
-      backgroundWindow.loadURL(`${url}?print=false`);
+      backgroundWindow.loadURL(`${url}?print=false&w=46mm`)
       const contents = backgroundWindow.webContents;
 
-      ipcMain.once("ready-to-print", (event) => {
+      ipcMain.once("ready-to-print", async(event) => {
         if (event.sender === contents) {
           console.log(`Printing content from ${url}`);
+          const printers = await contents.getPrintersAsync();
+          console.log("Available printers:", printers.map(p => p.options));
           contents.print(
-            { silent: true, printBackground: false, pageSize : { width: 88000 , height: 28000 } , margins: { marginType: "none"} },
+            { silent: true, printBackground: false, pageSize : { width: 58000 , height : 297000 }  },
             (success, failureReason) => {
               if (success) {
                 console.log("Print job sent successfully.");
