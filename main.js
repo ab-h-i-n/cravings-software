@@ -106,7 +106,7 @@ function createWindow() {
         parent: mainWindow,
       });
 
-      backgroundWindow.loadURL(`${url}?print=false&w=46mm`)
+      backgroundWindow.loadURL(`${url}?print=false`)
       const contents = backgroundWindow.webContents;
 
       ipcMain.once("ready-to-print", async(event) => {
@@ -115,7 +115,7 @@ function createWindow() {
           const printers = await contents.getPrintersAsync();
           console.log("Available printers:", printers.map(p => p.options));
           contents.print(
-            { silent: true, printBackground: false, pageSize : { width: 58000 , height : 297000 }  },
+            { silent: true, printBackground: false, pageSize : { width: 80000 , height : 297000 }  },
             (success, failureReason) => {
               if (success) {
                 console.log("Print job sent successfully.");
