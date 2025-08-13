@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Menu } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { autoUpdater } = require("electron-updater");
@@ -82,7 +82,7 @@ function createWindow() {
     width: 1280,
     height: 800,
     title: "Cravings.live",
-    frame: false,
+    frame: true,
     icon: path.join(__dirname, "build/icon.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -90,6 +90,8 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+
+  Menu.setApplicationMenu(null); // This will remove the menu bar
 
   mainWindow.loadURL("https://cravings.live/");
 

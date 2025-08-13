@@ -51,7 +51,7 @@ window.addEventListener("DOMContentLoaded", () => {
       .electron-toast.success { background-color: #28a745; }
       .electron-toast.error { background-color: #dc3545; }
     `;
-    document.head.appendChild(toastStyle);
+    // document.head.appendChild(toastStyle);
 
     // Function to create and show a toast.
     function showToast({ success, message }) {
@@ -89,7 +89,7 @@ window.addEventListener("DOMContentLoaded", () => {
           <button id="close-btn" class="window-control-btn" title="Close">x</button>
         </div>
       `;
-    document.body.prepend(titleBar);
+    // document.body.prepend(titleBar);
     
     // Inject the custom title bar CSS.
     const style = document.createElement("style");
@@ -103,7 +103,7 @@ window.addEventListener("DOMContentLoaded", () => {
         .window-control-btn:hover { background-color: #e0e0e0; }
         #close-btn:hover { background-color: #e81123; color: #ffffff; }
       `;
-    document.head.appendChild(style);
+    // document.head.appendChild(style);
 
     // Add event listeners for the title bar buttons.
     document.getElementById("minimize-btn")?.addEventListener("click", () => ipcRenderer.send("minimize-app"));
