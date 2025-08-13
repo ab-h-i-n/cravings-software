@@ -51,7 +51,7 @@ window.addEventListener("DOMContentLoaded", () => {
       .electron-toast.success { background-color: #28a745; }
       .electron-toast.error { background-color: #dc3545; }
     `;
-    // document.head.appendChild(toastStyle);
+    document.head.appendChild(toastStyle);
 
     // Function to create and show a toast.
     function showToast({ success, message }) {
