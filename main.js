@@ -111,7 +111,7 @@ function createWindow() {
         parent: mainWindow,
       });
 
-      backgroundWindow.loadURL(`${url}?print=false&w=72mm`);
+      backgroundWindow.loadURL(`${url}?print=false`);
       const contents = backgroundWindow.webContents;
 
       ipcMain.once("ready-to-print", async (event) => {
