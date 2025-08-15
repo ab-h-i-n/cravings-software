@@ -31,7 +31,9 @@ window.addEventListener("DOMContentLoaded", () => {
 
     waitForElement('#printable-content', () => {
       console.log('Found #printable-content, sending ready-to-print message.');
-      ipcRenderer.send('ready-to-print');
+      setTimeout(() => {
+        ipcRenderer.send('ready-to-print');
+      }, 500);
     });
 
   } else {

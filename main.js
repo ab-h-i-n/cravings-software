@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, Menu } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { autoUpdater } = require("electron-updater");
+const { execFile } = require("child_process");
 
 // 1. Import electron-log
 const log = require("electron-log");
@@ -50,7 +51,9 @@ function checkForUpdates() {
   });
 
   autoUpdater.on("download-progress", (progressObj) => {
-    const progressMessage = `Downloading new update - ${Math.round(progressObj.percent)}%`;
+    const progressMessage = `Downloading new update - ${Math.round(
+      progressObj.percent
+    )}%`;
     mainWindow.setProgressBar(progressObj.percent / 100);
     mainWindow.webContents.send("update-status", {
       success: true,
@@ -108,35 +111,76 @@ function createWindow() {
         parent: mainWindow,
       });
 
-      backgroundWindow.loadURL(`${url}?print=false`)
+      backgroundWindow.loadURL(`${url}?print=false&w=72mm`);
       const contents = backgroundWindow.webContents;
 
-      ipcMain.once("ready-to-print", async(event) => {
+      ipcMain.once("ready-to-print", async (event) => {
         if (event.sender === contents) {
-          console.log(`Printing content from ${url}`);
-          const printers = await contents.getPrintersAsync();
-          console.log("Available printers:", printers.map(p => p.options));
-          contents.print(
-            { silent: true, printBackground: false, pageSize : { width: 80000 , height : 297000 }  },
-            (success, failureReason) => {
-              if (success) {
-                console.log("Print job sent successfully.");
-                mainWindow.webContents.send("print-status", {
-                  success: true,
-                  message: "Print job sent successfully! 👍",
-                });
-              } else {
-                const printErrorMsg = `Print failed for URL ${url}. Reason: ${failureReason}`;
-                console.error(printErrorMsg);
-                logError(printErrorMsg);
-                mainWindow.webContents.send("print-status", {
-                  success: false,
-                  message: `Print failed: ${failureReason}`,
-                });
-              }
-              if (!backgroundWindow.isDestroyed()) backgroundWindow.close();
+          try {
+            log.info(`Printing content from ${url}`);
+
+            const filename = "temp_print.png";
+            let filePath;
+
+            if (app.isPackaged) {
+              // In production, the temp file is in the 'resources' folder
+              filePath = path.join(process.resourcesPath, filename);
+            } else {
+              // In development, the temp file is in the project root
+              filePath = path.join(__dirname, filename);
             }
-          );
+
+            if (!fs.existsSync(filePath)) {
+              fs.mkdirSync(path.dirname(filePath), { recursive: true });
+            }
+            const imgPath = filePath;
+
+            //save only #printable-content
+            const rect = await contents.executeJavaScript(`
+            const element = document.querySelector('#printable-content');
+            const rect = element.getBoundingClientRect();
+            ({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+          `);
+            await contents.capturePage(rect).then((image) => {
+              fs.writeFileSync(imgPath, image.toPNG());
+            });
+
+            log.info(`Page saved as: ${imgPath}`);
+
+            // Print using C# exe
+            const exeName = "print.exe";
+            let exePath;
+
+            if (app.isPackaged) {
+              // In production, the .exe is in the 'resources' folder
+              exePath = path.join(process.resourcesPath, exeName);
+            } else {
+              // In development, it's in the project root
+              exePath = path.join(__dirname, exeName);
+            }
+
+            log.info(`Attempting to run executable from: ${exePath}`);
+
+            execFile(exePath, ["", imgPath], (err, stdout, stderr) => {
+              if (err) {
+                log.error("Printing error:", err);
+                return;
+              }
+              log.info("Printed successfully");
+              mainWindow.webContents.send("print-status", {
+                success: true,
+                message: "Print job sent successfully! 👍",
+              });
+              // Optionally delete the temp file
+              // fs.unlinkSync(imgPath);
+            });
+          } catch (error) {
+            log.error("Printing error:", error);
+            mainWindow.webContents.send("print-status", {
+              success: false,
+              message: "Failed to send print job. 😞",
+            });
+          }
         }
       });
 
