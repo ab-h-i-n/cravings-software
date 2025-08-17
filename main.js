@@ -109,9 +109,10 @@ function createWindow() {
           preload: path.join(__dirname, "preload.js"),
         },
         parent: mainWindow,
+        height: 5000
       });
 
-      backgroundWindow.loadURL(`${url}?print=false`);
+      backgroundWindow.loadURL(`${url}?print=false&w=90mm`);
       const contents = backgroundWindow.webContents;
 
       ipcMain.once("ready-to-print", async (event) => {
@@ -141,6 +142,7 @@ function createWindow() {
             const rect = element.getBoundingClientRect();
             ({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
           `);
+
             await contents.capturePage(rect).then((image) => {
               fs.writeFileSync(imgPath, image.toPNG());
             });
