@@ -309,6 +309,9 @@ function convertBillToEscPos(bill) {
   
   if(calc) {
     buffer += pair("Subtotal:", `${currency} ${calc.subtotal.toFixed(2)}`);
+    if (calc.discount_amount > 0) {
+      buffer += pair("Discount:", `-${currency} ${calc.discount_amount.toFixed(2)}`);
+    }
     if (calc.gst_amount > 0) {
         // Determine tax label (GST or VAT)
         const taxLabel = (bill.country === "United Arab Emirates") ? "VAT" : "GST";
