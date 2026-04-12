@@ -140,12 +140,21 @@ function convertOrderToEscPos(order) {
   buffer += BOLD_OFF;
   buffer += textLine("-".repeat(WIDTH)); 
   
-  // 3. Order Info
+  // 3. Table Name / Number
+  if (order.table_name || order.table_number) {
+    buffer += ALIGN_CENTER;
+    buffer += BOLD_ON;
+    buffer += textLine(order.table_name || `Table ${order.table_number}`);
+    buffer += BOLD_OFF;
+    buffer += textLine("-".repeat(WIDTH));
+  }
+
+  // 4. Order Info
   buffer += ALIGN_LEFT;
   buffer += textLine(`Order: ${order.display_id || order.id.slice(0, 8)}`);
   buffer += textLine(`Type : ${order.type}`);
-  buffer += textLine(`Date : ${order.created_at}`); 
-  
+  buffer += textLine(`Date : ${order.created_at}`);
+
   if(order.notes) {
       buffer += textLine(" ");
       buffer += BOLD_ON + textLine("Order Notes:") + BOLD_OFF;
@@ -251,11 +260,20 @@ function convertBillToEscPos(bill) {
   
   buffer += textLine("-".repeat(WIDTH));
   
-  // 3. Bill Info
+  // 3. Table Name / Number
+  if (bill.table_name || bill.table_number) {
+    buffer += ALIGN_CENTER;
+    buffer += BOLD_ON;
+    buffer += textLine(bill.table_name || `Table ${bill.table_number}`);
+    buffer += BOLD_OFF;
+    buffer += textLine("-".repeat(WIDTH));
+  }
+
+  // 4. Bill Info
   buffer += ALIGN_LEFT;
   buffer += pair(`Order: ${bill.display_id || bill.id.slice(0, 8)}`, "");
   buffer += pair(`Date : ${bill.created_at}`, `Time: ${bill.time || ""}`);
-  
+
   buffer += pair(`Type : ${bill.type}`, "");
   if(bill.payment_method) buffer += pair(`Pay  : ${bill.payment_method}`, "");
   
