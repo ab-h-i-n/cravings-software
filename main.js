@@ -141,13 +141,11 @@ function convertOrderToEscPos(order) {
   buffer += textLine("-".repeat(WIDTH)); 
   
   // 3. Table Name / Number
-  if (order.table_name || order.table_number) {
-    buffer += ALIGN_CENTER;
-    buffer += BOLD_ON;
-    buffer += textLine(order.table_name || `Table ${order.table_number}`);
-    buffer += BOLD_OFF;
-    buffer += textLine("-".repeat(WIDTH));
-  }
+  buffer += ALIGN_CENTER;
+  buffer += BOLD_ON;
+  buffer += textLine(order.table_name || (order.table_number ? `Table ${order.table_number}` : "N/A"));
+  buffer += BOLD_OFF;
+  buffer += textLine("-".repeat(WIDTH));
 
   // 4. Order Info
   buffer += ALIGN_LEFT;
@@ -261,13 +259,11 @@ function convertBillToEscPos(bill) {
   buffer += textLine("-".repeat(WIDTH));
   
   // 3. Table Name / Number
-  if (bill.table_name || bill.table_number) {
-    buffer += ALIGN_CENTER;
-    buffer += BOLD_ON;
-    buffer += textLine(bill.table_name || `Table ${bill.table_number}`);
-    buffer += BOLD_OFF;
-    buffer += textLine("-".repeat(WIDTH));
-  }
+  buffer += ALIGN_CENTER;
+  buffer += BOLD_ON;
+  buffer += textLine(bill.table_name || (bill.table_number ? `Table ${bill.table_number}` : "N/A"));
+  buffer += BOLD_OFF;
+  buffer += textLine("-".repeat(WIDTH));
 
   // 4. Bill Info
   buffer += ALIGN_LEFT;
