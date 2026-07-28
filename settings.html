@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+  <title>Printer Settings</title>
+  <style>
+    :root { --accent:#e8623a; --bg:#f6f6f7; --card:#fff; --line:#e3e3e6; --muted:#6b6b70; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif; background:var(--bg); color:#1c1c1e; font-size:14px; }
+    .wrap { padding:18px 20px 16px; }
+    h1 { font-size:17px; margin:0 0 2px; }
+    .sub { color:var(--muted); font-size:12px; margin:0 0 16px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:14px; }
+    .lbl { font-weight:600; font-size:13px; margin-bottom:8px; display:block; }
+    .types { display:flex; gap:10px; }
+    .type { flex:1; border:1.5px solid var(--line); border-radius:8px; padding:10px; cursor:pointer; text-align:center; transition:.15s; }
+    .type:hover { border-color:#c9c9cc; }
+    .type input { display:none; }
+    .type.sel { border-color:var(--accent); background:#fdf1ec; }
+    .type .t { font-weight:700; }
+    .type .d { color:var(--muted); font-size:11px; margin-top:2px; }
+    .row { margin-top:14px; }
+    .row:first-child { margin-top:0; }
+    .rowhead { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; }
+    .rowhead .val { font-variant-numeric:tabular-nums; font-weight:600; }
+    input[type=range] { width:100%; accent-color:var(--accent); }
+    input[type=number] { width:78px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px; }
+    .hint { color:var(--muted); font-size:11px; margin-top:4px; }
+    .chk { display:flex; gap:9px; align-items:flex-start; font-size:13px; cursor:pointer; }
+    .chk input { margin-top:2px; width:16px; height:16px; accent-color:var(--accent); }
+    .chk .h { color:var(--muted); font-size:11px; margin-top:2px; }
+    .btns { display:flex; gap:10px; margin-top:4px; }
+    button { flex:1; padding:10px; border-radius:8px; border:1px solid var(--line); background:#fff; font-size:13px; font-weight:600; cursor:pointer; }
+    button:hover { background:#f0f0f2; }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    button.primary:hover { filter:brightness(.95); }
+    .status { min-height:18px; text-align:center; font-size:12px; color:var(--muted); margin-top:10px; }
+    .status.ok { color:#1f9d55; } .status.err { color:#d33; }
+    .foot { color:var(--muted); font-size:11px; text-align:center; margin-top:4px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Printer Settings</h1>
+    <p class="sub">Paper size &amp; text scale for this printer. Bill layout and Full Arabic are now set in the web dashboard (Settings &rarr; Store &rarr; Bill Printing).</p>
+
+    <div class="card">
+      <span class="lbl">Printer type</span>
+      <div class="types" id="types">
+        <label class="type" data-type="58mm"><input type="radio" name="ptype" value="58mm"><div class="t">58 mm</div><div class="d">small roll</div></label>
+        <label class="type" data-type="80mm"><input type="radio" name="ptype" value="80mm"><div class="t">80 mm</div><div class="d">standard roll</div></label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div class="rowhead"><span class="lbl" style="margin:0">Width (dots)</span><input type="number" id="widthNum" min="120" max="1200" step="8"></div>
+        <input type="range" id="widthRange" min="120" max="1200" step="8">
+        <div class="hint">Printhead width. 58 mm ≈ 384, 80 mm ≈ 576. Increase until the test bar just fills the paper.</div>
+      </div>
+      <div class="row">
+        <div class="rowhead"><span class="lbl" style="margin:0">Scale (text size)</span><input type="number" id="scaleNum" min="1" max="3" step="0.05"></div>
+        <input type="range" id="scaleRange" min="1" max="3" step="0.05">
+        <div class="hint">Bigger = larger text (long bilingual lines wrap sooner). <span id="srcInfo"></span></div>
+      </div>
+    </div>
+
+    <div class="btns">
+      <button id="testBtn">Test Print</button>
+      <button id="saveBtn" class="primary">Save</button>
+      <button id="closeBtn">Close</button>
+    </div>
+    <div class="status" id="status"></div>
+    <div class="foot">Tip: open this anytime with Ctrl+Shift+P or the tray icon.</div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const widthNum = $("widthNum"), widthRange = $("widthRange");
+    const scaleNum = $("scaleNum"), scaleRange = $("scaleRange");
+    const status = $("status"), srcInfo = $("srcInfo");
+    let cfg = null, currentType = "80mm";
+
+    const clampW = (w) => Math.min(1200, Math.max(120, Math.round((Number(w) || 384) / 8) * 8));
+    const clampS = (s) => Math.min(3, Math.max(1, Math.round((Number(s) || 1.6) * 100) / 100));
+
+    function setStatus(msg, kind) { status.textContent = msg; status.className = "status" + (kind ? " " + kind : ""); }
+    function updateSrcInfo() {
+      const w = clampW(widthNum.value), s = clampS(scaleNum.value);
+      srcInfo.textContent = "Layout ≈ " + Math.round(w / s) + " px.";
+    }
+    function selectTypeUI(type) {
+      document.querySelectorAll("#types .type").forEach(el => el.classList.toggle("sel", el.dataset.type === type));
+      const radio = document.querySelector(`input[name=ptype][value="${type}"]`);
+      if (radio) radio.checked = true;
+    }
+    function fillForm(type) {
+      const p = cfg.profiles[type] || { rasterWidth: type === "58mm" ? 384 : 576, scale: 1.6 };
+      widthNum.value = p.rasterWidth; widthRange.value = p.rasterWidth;
+      scaleNum.value = p.scale; scaleRange.value = p.scale;
+      updateSrcInfo();
+    }
+    function stash(type) {
+      cfg.profiles[type] = { rasterWidth: clampW(widthNum.value), scale: clampS(scaleNum.value) };
+    }
+    function buildCfg() {
+      stash(currentType);
+      // Bill layout + Full Arabic are managed in the web dashboard now; we only send
+      // the physical printer profile. savePrintConfig preserves any legacy values.
+      return { activeType: currentType, profiles: cfg.profiles };
+    }
+
+    // sync slider <-> number
+    widthRange.addEventListener("input", () => { widthNum.value = widthRange.value; updateSrcInfo(); });
+    widthNum.addEventListener("input", () => { widthRange.value = widthNum.value; updateSrcInfo(); });
+    scaleRange.addEventListener("input", () => { scaleNum.value = scaleRange.value; updateSrcInfo(); });
+    scaleNum.addEventListener("input", () => { scaleRange.value = scaleNum.value; updateSrcInfo(); });
+
+    document.querySelectorAll("input[name=ptype]").forEach(r => {
+      r.addEventListener("change", () => {
+        stash(currentType);
+        currentType = r.value;
+        selectTypeUI(currentType);
+        fillForm(currentType);
+      });
+    });
+    $("saveBtn").addEventListener("click", async () => {
+      setStatus("Saving…");
+      cfg = await window.printSettings.save(buildCfg());
+      selectTypeUI(cfg.activeType); currentType = cfg.activeType; fillForm(currentType);
+      setStatus("Saved ✓ (active: " + cfg.activeType + ")", "ok");
+    });
+    $("testBtn").addEventListener("click", async () => {
+      setStatus("Printing test…");
+      cfg = await window.printSettings.save(buildCfg()); // apply current values first
+      const res = await window.printSettings.test();
+      setStatus(res.ok ? "Test sent 🖨️" : ("Test failed: " + (res.error || "")), res.ok ? "ok" : "err");
+    });
+    $("closeBtn").addEventListener("click", () => window.printSettings.close());
+
+    (async function init() {
+      cfg = await window.printSettings.get();
+      if (!cfg || !cfg.profiles) cfg = { activeType: "80mm", profiles: { "58mm": { rasterWidth: 384, scale: 1.6 }, "80mm": { rasterWidth: 576, scale: 1.6 } } };
+      currentType = cfg.activeType || "80mm";
+      selectTypeUI(currentType);
+      fillForm(currentType);
+    })();
+  </script>
+</body>
+</html>

@@ -3,6 +3,7 @@ node_modules/
 
 # Electron-builder temporary files
 dist/
+dist-win7/
 
 
 # Ignore build artifacts and logs
@@ -10,3 +11,8 @@ dist/
 cravings-log.txt
 builder-debug.yml
 builder-effective-config.yml
+
+# Scratch print payloads / renders produced by the test scripts
+temp_*.bin
+temp_*.png
+temp_*.html

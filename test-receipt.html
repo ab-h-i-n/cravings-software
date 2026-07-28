@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    html, body { margin: 0; padding: 0; background: #fff; }
+    #printable-content { font-family: monospace; color: #000; padding: 2px 4px; }
+    .bar { height: 6px; background: #000; }
+    .c { text-align: center; }
+    .b { font-weight: bold; }
+    .row { display: flex; justify-content: space-between; gap: 8px; }
+    .sep { border-top: 1px dashed #000; margin: 5px 0; }
+  </style>
+</head>
+<body>
+  <!-- Sample receipt rendered through the REAL raster pipeline so the Test Print
+       reflects the current Width and Scale exactly like a live Arabic bill.
+       #printable-content + the ?w= param mirror the live /bill page. -->
+  <div id="printable-content">
+    <div class="bar"></div>
+    <div class="c b" style="font-size:1.15em; margin-top:4px;">PRINTER TEST</div>
+    <div class="c" id="info"></div>
+    <div class="sep"></div>
+    <div class="row"><span>1x Chicken Burger برجر دجاج</span><span>8.00</span></div>
+    <div class="row"><span>2x Shrimp Burger برجر جمبري</span><span>20.00</span></div>
+    <div class="row"><span>1x Fries بطاطس</span><span>5.00</span></div>
+    <div class="sep"></div>
+    <div class="row b"><span>TOTAL</span><span>SAR 33.00</span></div>
+    <div class="c" style="margin-top:4px;">شكرا لزيارتكم - Thank you</div>
+  </div>
+  <script>
+    const p = new URLSearchParams(location.search);
+    const w = p.get("w") || "240px";
+    const el = document.getElementById("printable-content");
+    el.style.width = w;
+    el.style.maxWidth = w;
+    document.getElementById("info").textContent =
+      "width " + (p.get("dots") || "") + " / scale " + (p.get("scale") || "");
+  </script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 {
   "name": "cravings-desktop",
-  "version": "1.1.6",
+  "version": "1.3.5",
   "description": "Desktop application for Cravings.live",
   "homepage": "https://www.cravings.live",
   "main": "main.js",
@@ -9,6 +9,7 @@
     "pack": "electron-builder --win",
     "ship": "electron-builder --win --publish always",
     "build:win": "electron-builder --win",
+    "build:win7": "electron-builder --config electron-builder-win7.js",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux"
   },
@@ -25,6 +26,12 @@
     "files": [
       "main.js",
       "preload.js",
+      "arabicLabels.js",
+      "billInvoice.js",
+      "billInvoiceUae.js",
+      "settings.html",
+      "settings-preload.js",
+      "test-receipt.html",
       "build/**/*"
     ],
     "extraResources": [
