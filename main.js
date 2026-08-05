@@ -104,6 +104,29 @@ function checkForUpdates() {
 
 // --- MAIN APPLICATION WINDOW ---
 // --- ESC/POS HELPER FUNCTIONS ---
+
+// Characters per line for the ESC/POS TEXT path. Font A glyphs are 12 dots wide,
+// so a 58mm head (384 dots) fits 32 columns and an 80mm head (576) fits 48. This
+// used to be hardcoded to 48, which made every line on a 58mm printer overflow and
+// wrap. Derived from the active printer profile so text matches the paper.
+function escposCharsPerLine() {
+  return printConfig && printConfig.activeType === "58mm" ? 32 : 48;
+}
+
+// Break text at spaces instead of letting the printer chop it mid-word.
+function escposWrap(str, width) {
+  const words = String(str == null ? "" : str).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = "";
+  for (const w of words) {
+    if (!cur.length) cur = w;
+    else if ((cur + " " + w).length <= width) cur += " " + w;
+    else { lines.push(cur); cur = w; }
+    while (cur.length > width) { lines.push(cur.slice(0, width)); cur = cur.slice(width); }
+  }
+  if (cur.length) lines.push(cur);
+  return lines.length ? lines : [""];
+}
 function convertOrderToEscPos(order) {
   const ESC = "\x1B";
   const GS = "\x1D";
@@ -119,7 +142,7 @@ function convertOrderToEscPos(order) {
   const CUT_FULL = GS + "V" + "\x42" + "\x00";
   
   // Constants
-  const WIDTH = 48; // 80mm printer standard (Font A usually 48 chars)
+  const WIDTH = escposCharsPerLine(); // 58mm = 32 cols, 80mm = 48
   
   // Helpers
   const replaceSpecialChars = (str) => {
@@ -189,14 +212,17 @@ function convertOrderToEscPos(order) {
   
   if (order.items && order.items.length > 0) {
     order.items.forEach(item => {
-      // Quantity x Name
-      buffer += BOLD_ON; 
-      buffer += textLine(`${item.quantity} x ${item.name}`);
+      // Quantity x Name — wrapped at spaces so long names don't get chopped
+      // mid-word by the printer's own wrapping.
+      buffer += BOLD_ON;
+      escposWrap(replaceSpecialChars(`${item.quantity} x ${item.name}`), WIDTH)
+        .forEach((ln) => { buffer += textLine(ln); });
       buffer += BOLD_OFF;
-      
+
       // Notes
       if (item.notes) {
-        buffer += textLine(`  (Note: ${item.notes})`);
+        escposWrap(replaceSpecialChars(`  (Note: ${item.notes})`), WIDTH)
+          .forEach((ln) => { buffer += textLine(ln); });
       }
       buffer += LF; 
     });
@@ -238,7 +264,7 @@ function convertBillToEscPos(bill) {
   const BOLD_OFF = ESC + "E" + "\x00";
   const CUT_FULL = GS + "V" + "\x42" + "\x00";
   
-  const WIDTH = 48; // 80mm printer standard
+  const WIDTH = escposCharsPerLine(); // 58mm = 32 cols, 80mm = 48
 
   // Helpers
   const replaceSpecialChars = (str) => {
@@ -323,9 +349,13 @@ function convertBillToEscPos(bill) {
   if (bill.order_items && bill.order_items.length > 0) {
       bill.order_items.forEach(item => {
           const itemTotal = (item.quantity * item.price).toFixed(2);
-          const left = `${item.quantity} x ${item.name}`;
-          const right = itemTotal;
-          buffer += pair(left, right);
+          const left = replaceSpecialChars(`${item.quantity} x ${item.name}`);
+          // Wrap the name ourselves so it breaks at spaces; the amount is
+          // right-aligned on the LAST line rather than pushed onto its own.
+          const lines = escposWrap(left, Math.max(1, WIDTH - itemTotal.length - 1));
+          lines.forEach((ln, i) => {
+              buffer += (i === lines.length - 1) ? pair(ln, itemTotal) : textLine(ln);
+          });
       });
   }
   
@@ -470,6 +500,15 @@ const DEFAULT_PRINT_CONFIG = {
   // "default" (cravings page) | "invoice" (ZATCA tax-invoice) | "uae" (UAE simplified
   // tax invoice, VAT/Net labels always bilingual).
   billLayout: "default",
+  // Silences the looping new-order alarm the dashboard plays (webContents audio).
+  muteOrderSound: false,
+  // How receipts are sent to the printer:
+  //   "raster" (default) — render the page to a GS v 0 bitmap. Handles Arabic,
+  //                        logos and the invoice/uae bill layouts.
+  //   "escpos"           — raw ESC/POS text in the printer's own font. Faster,
+  //                        but DEFAULT layout only: no custom layouts, no Arabic,
+  //                        no logos (the printer simply cannot render them).
+  printMode: "raster",
   profiles: {
     "58mm": { rasterWidth: 384, scale: 1.6 },
     "80mm": { rasterWidth: 576, scale: 1.6 },
@@ -498,7 +537,11 @@ const clampScale = (s) => Math.min(3, Math.max(1, Math.round((Number(s) || 1.6) 
 function loadPrintConfig() {
   const cfg = JSON.parse(JSON.stringify(DEFAULT_PRINT_CONFIG));
   try {
-    const parsed = JSON.parse(fs.readFileSync(printConfigPath(), "utf8"));
+    // Strip a UTF-8 BOM first: anything that rewrites this file with a Windows
+    // editor / PowerShell Set-Content adds one, and JSON.parse throws on it —
+    // which used to silently reset the printer calibration to defaults.
+    const raw = fs.readFileSync(printConfigPath(), "utf8").replace(/^﻿/, "");
+    const parsed = JSON.parse(raw);
     if (parsed.profiles) {
       for (const k of ["58mm", "80mm"]) {
         if (parsed.profiles[k]) {
@@ -510,6 +553,8 @@ function loadPrintConfig() {
       }
       if (parsed.activeType === "58mm" || parsed.activeType === "80mm") cfg.activeType = parsed.activeType;
       if (typeof parsed.fullArabic === "boolean") cfg.fullArabic = parsed.fullArabic;
+      if (typeof parsed.muteOrderSound === "boolean") cfg.muteOrderSound = parsed.muteOrderSound;
+      if (parsed.printMode === "raster" || parsed.printMode === "escpos") cfg.printMode = parsed.printMode;
       if (isValidBillLayout(parsed.billLayout)) cfg.billLayout = parsed.billLayout;
     } else {
       // legacy formats: { paperWidthMM: 58 } or { rasterWidth: N }
@@ -519,7 +564,9 @@ function loadPrintConfig() {
     }
     log.info(`Print config loaded: ${JSON.stringify(cfg)}`);
   } catch (e) {
-    log.info("No/invalid print-config.json; using defaults (80mm)");
+    // Say WHY: this used to be silent, so a corrupt file looked like the
+    // calibration had reset itself for no reason.
+    log.warn(`Could not read print-config.json (${e.message}); using defaults (80mm)`);
   }
   return cfg;
 }
@@ -540,6 +587,10 @@ function savePrintConfig(incoming) {
     ? incoming.fullArabic : printConfig.fullArabic;
   clean.billLayout = (incoming && isValidBillLayout(incoming.billLayout))
     ? incoming.billLayout : printConfig.billLayout;
+  clean.muteOrderSound = (incoming && typeof incoming.muteOrderSound === "boolean")
+    ? incoming.muteOrderSound : printConfig.muteOrderSound;
+  clean.printMode = (incoming && (incoming.printMode === "raster" || incoming.printMode === "escpos"))
+    ? incoming.printMode : printConfig.printMode;
   for (const k of ["58mm", "80mm"]) {
     const src = (incoming && incoming.profiles && incoming.profiles[k]) || printConfig.profiles[k] || DEFAULT_PRINT_CONFIG.profiles[k];
     clean.profiles[k] = { rasterWidth: clampWidth(src.rasterWidth), scale: clampScale(src.scale) };
@@ -568,6 +619,19 @@ const SAMPLE_ORDER = {
 // Test print: render a sample receipt through the REAL raster pipeline at the current
 // Width + Scale + Layout, so tuning is reflected on paper exactly like a live bill.
 async function printTestSlip() {
+  // ESC/POS mode: test the mode that will actually be used — raw text in the
+  // printer's own font, default layout. No page render is involved at all.
+  if (printConfig.printMode === "escpos") {
+    log.info("Test print: ESC/POS text mode");
+    const filename = "temp_printer_test.bin";
+    const filePath = app.isPackaged ? path.join(process.resourcesPath, filename) : path.join(__dirname, filename);
+    fs.writeFileSync(filePath, convertBillToEscPos(SAMPLE_ORDER));
+    const exePath = app.isPackaged ? path.join(process.resourcesPath, "print-raw.exe") : path.join(__dirname, "print-raw.exe");
+    return await new Promise((resolve, reject) => {
+      execFile(exePath, [filePath], (err, stdout) => (err ? reject(err) : resolve(stdout)));
+    });
+  }
+
   const win = new BrowserWindow({
     show: false,
     width: RASTER_WIDTH + 44,
@@ -739,25 +803,18 @@ function createWindow() {
     },
   });
 
-  // Top menu bar with a Printer menu (Printer Settings + Test Print).
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    {
-      label: "Printer",
-      submenu: [
-        { label: "Printer Settings…", accelerator: "CmdOrCtrl+Shift+P", click: () => openSettingsWindow() },
-        { label: "Test Print", click: () => { printTestSlip().catch((e) => log.warn("Test print failed:", e.message)); } },
-        { type: "separator" },
-        { role: "reload" },
-        { role: "quit" },
-      ],
-    },
-  ]));
+  buildAppMenu();
 
   mainWindow.loadURL("https://cravings.live/");
 
+  // Restore the saved mute state, and re-apply after every navigation/reload so
+  // the alarm can't come back unmuted when the dashboard reloads.
+  applyOrderSoundMute();
+  mainWindow.webContents.on("did-finish-load", applyOrderSoundMute);
+
   // --- BACKGROUND PRINTING HANDLER ---
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.includes("/bill/") || url.includes("/kot/")) {
+  // Runs the whole hidden-window print pipeline for one /bill/ or /kot/ URL.
+  const startPrintJob = (url) => {
       console.log(`Intercepted URL for printing: ${url}`);
 
       const backgroundWindow = new BrowserWindow({
@@ -773,7 +830,21 @@ function createWindow() {
 
       // Lay out at RASTER_SRC_WIDTH; captureReceiptRaster zooms it to the printhead
       // width and downscales the native capture for crisp output.
-      backgroundWindow.loadURL(`${url}?print=false&w=${RASTER_SRC_WIDTH}px`);
+      // Build the query properly. A naive `${url}?print=false` breaks if the URL
+      // already carries a query (`...?x=1?print=false`) — the page then never sees
+      // print=false, calls window.print(), and the user gets a printer dialog
+      // instead of a silent thermal print.
+      let printUrl;
+      try {
+        const u = new URL(url);
+        u.searchParams.set("print", "false");
+        u.searchParams.set("w", `${RASTER_SRC_WIDTH}px`);
+        printUrl = u.toString();
+      } catch {
+        const sep = url.includes("?") ? "&" : "?";
+        printUrl = `${url}${sep}print=false&w=${RASTER_SRC_WIDTH}px`;
+      }
+      backgroundWindow.loadURL(printUrl);
       
       // Capture console messages -> build ESC/POS text OR a raster image
       let printHandled = false;
@@ -813,7 +884,24 @@ function createWindow() {
               const fullArabic = webRendered ? orderData.full_arabic : printConfig.fullArabic;
               const layout = isValidBillLayout(orderData.bill_layout) ? orderData.bill_layout : printConfig.billLayout;
 
-              if (isBill && isCustomBillLayout(layout)) {
+              if (printConfig.printMode === "escpos") {
+                  // Raw ESC/POS text: the printer's built-in font, DEFAULT layout only.
+                  // Custom layouts, Arabic and logos are image-only, so warn loudly
+                  // rather than silently dropping them from the receipt.
+                  if (isBill && isCustomBillLayout(layout)) {
+                      log.warn(`ESC/POS mode: ignoring '${layout}' bill layout (raster-only) - printing the default layout`);
+                  }
+                  if (fullArabic || receiptHasUnprintable(orderData, isBill)) {
+                      log.warn("ESC/POS mode: non-ASCII text (e.g. Arabic) cannot be rendered by the printer font and will be dropped - switch to Raster to print it");
+                  }
+                  if (isBill && orderData.bill_logo_url) {
+                      log.warn("ESC/POS mode: bill logo skipped (images need Raster mode)");
+                  }
+                  log.info("Using ESC/POS text print (default layout)");
+                  escPosBuffer = isBill
+                      ? convertBillToEscPos(orderData)
+                      : convertOrderToEscPos(orderData);
+              } else if (isBill && isCustomBillLayout(layout)) {
                   if (webRendered) {
                       // The live /bill page already rendered this layout — capture it as-is.
                       log.info(`Using ${layout} bill layout raster print (web-rendered)`);
@@ -838,9 +926,11 @@ function createWindow() {
                   log.info(`Using raster image print (fullArabic=${fullArabic}, logo=${!!orderData.bill_logo_url}, webRendered=${webRendered})`);
                   escPosBuffer = await captureReceiptRaster(backgroundWindow, fullArabic && !webRendered);
               } else {
-                  escPosBuffer = isBill
-                      ? convertBillToEscPos(orderData)
-                      : convertOrderToEscPos(orderData);
+                  // Raster mode with nothing special on the receipt: still print as an
+                  // image so "Raster" means raster — what you see on /bill is what the
+                  // printer produces. ESC/POS text is reached only via printMode.
+                  log.info("Using raster image print (raster mode)");
+                  escPosBuffer = await captureReceiptRaster(backgroundWindow, false);
               }
           } catch (e) {
               log.error("Error building print payload", e);
@@ -905,10 +995,70 @@ function createWindow() {
         if (!backgroundWindow.isDestroyed()) backgroundWindow.close();
       });
 
+  };
+
+  const isPrintUrl = (u) =>
+    typeof u === "string" && (u.includes("/bill/") || u.includes("/kot/"));
+  // window.open("", "_blank") — a tab claimed before its URL is known.
+  const isClaimedBlank = (u) => !u || u === "about:blank";
+
+  // The web app's src/lib/printOrder.ts claims its tabs SYNCHRONOUSLY inside the
+  // click (otherwise the popup is blocked after an await) and only navigates them
+  // to /bill|/kot afterwards. That means the URL is not known in the open handler,
+  // so we let the window through but keep it hidden and take it over the moment it
+  // heads for a print route — before the page can fire its own window.print().
+  const watchClaimedPrintWindow = (child) => {
+    let taken = false;
+
+    const takeOver = (event, navUrl) => {
+      if (taken || child.isDestroyed()) return;
+      if (!isPrintUrl(navUrl)) {
+        // Not a print document after all: an ordinary popup that happened to be
+        // claimed blank. Never leave it invisible.
+        if (!child.isVisible()) child.show();
+        return;
+      }
+      taken = true;
+      if (event && !event.defaultPrevented) event.preventDefault();
+      try { child.webContents.stop(); } catch { /* already gone */ }
+      log.info(`Claimed print window heading to ${navUrl}; taking over`);
+      startPrintJob(navUrl);
+      if (!child.isDestroyed()) child.close();
+    };
+
+    child.webContents.on("will-navigate", takeOver);
+    // Fallback: a location.replace() driven by the OPENER can reach the child
+    // without a cancelable will-navigate, so stop it here instead.
+    child.webContents.on("did-start-navigation", (event, navUrl, isInPlace, isMainFrame) => {
+      if (isMainFrame && !isInPlace) takeOver(null, navUrl);
+    });
+
+    // If it never navigates anywhere, don't strand a hidden window.
+    const orphanTimer = setTimeout(() => {
+      if (!taken && !child.isDestroyed() && !child.isVisible()) child.close();
+    }, 20000);
+    child.on("closed", () => clearTimeout(orphanTimer));
+  };
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    log.info(`window.open -> ${url || "(blank)"}`);
+    if (isPrintUrl(url)) {
+      startPrintJob(url);
       return { action: "deny" };
     }
-
+    if (isClaimedBlank(url)) {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: { show: false, parent: mainWindow },
+      };
+    }
     return { action: "allow" };
+  });
+
+  mainWindow.webContents.on("did-create-window", (child, details) => {
+    const childUrl = details && details.url;
+    log.info(`child window created -> ${childUrl || "(blank)"}`);
+    if (isClaimedBlank(childUrl)) watchClaimedPrintWindow(child);
   });
 
   // Ctrl+Shift+P opens Printer Settings (works even though the menu bar is hidden).
@@ -954,17 +1104,73 @@ function openSettingsWindow() {
   settingsWindow.on("closed", () => { settingsWindow = null; });
 }
 
+// --- NEW-ORDER ALARM MUTE ---
+// The dashboard loops an alert tone until the order is accepted. It is played by
+// the web page, so the shell silences it by muting the window's audio — that also
+// covers any future sound the dashboard adds.
+function applyOrderSoundMute() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.setAudioMuted(!!printConfig.muteOrderSound);
+  }
+}
+
+function setOrderSoundMuted(muted) {
+  savePrintConfig({ ...printConfig, muteOrderSound: !!muted });
+  applyOrderSoundMute();
+  buildAppMenu();
+  refreshTrayMenu();
+  log.info(`New-order sound ${printConfig.muteOrderSound ? "MUTED" : "unmuted"}`);
+}
+
+// Rebuilt whenever the mute toggle flips so the checkbox reflects reality.
+function buildAppMenu() {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: "Printer",
+      submenu: [
+        { label: "Printer Settings…", accelerator: "CmdOrCtrl+Shift+P", click: () => openSettingsWindow() },
+        { label: "Test Print", click: () => { printTestSlip().catch((e) => log.warn("Test print failed:", e.message)); } },
+        { type: "separator" },
+        { role: "reload" },
+        { role: "quit" },
+      ],
+    },
+    {
+      label: "Sound",
+      submenu: [
+        {
+          label: "Mute new-order sound",
+          type: "checkbox",
+          checked: !!printConfig.muteOrderSound,
+          click: (item) => setOrderSoundMuted(item.checked),
+        },
+      ],
+    },
+  ]));
+}
+
+function refreshTrayMenu() {
+  if (!tray || tray.isDestroyed()) return;
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "Printer Settings", click: () => openSettingsWindow() },
+    {
+      label: "Mute new-order sound",
+      type: "checkbox",
+      checked: !!printConfig.muteOrderSound,
+      click: (item) => setOrderSoundMuted(item.checked),
+    },
+    { label: "Show App", click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } } },
+    { type: "separator" },
+    { label: "Quit", click: () => app.quit() },
+  ]));
+}
+
 function createTray() {
   try {
     const img = nativeImage.createFromPath(path.join(__dirname, "build/icon.png"));
     tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
     tray.setToolTip("Cravings.live");
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: "Printer Settings", click: () => openSettingsWindow() },
-      { label: "Show App", click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } } },
-      { type: "separator" },
-      { label: "Quit", click: () => app.quit() },
-    ]));
+    refreshTrayMenu();
     tray.on("double-click", () => openSettingsWindow());
   } catch (e) {
     log.warn("Tray init failed (settings still available via Ctrl+Shift+P):", e.message);

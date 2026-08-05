@@ -54,6 +54,15 @@
     </div>
 
     <div class="card">
+      <span class="lbl">Print mode</span>
+      <div class="types" id="modes">
+        <label class="type" data-mode="raster"><input type="radio" name="pmode" value="raster"><div class="t">Raster</div><div class="d">image · all layouts</div></label>
+        <label class="type" data-mode="escpos"><input type="radio" name="pmode" value="escpos"><div class="t">ESC/POS</div><div class="d">text · default only</div></label>
+      </div>
+      <div class="hint" id="modeHint"></div>
+    </div>
+
+    <div class="card">
       <div class="row">
         <div class="rowhead"><span class="lbl" style="margin:0">Width (dots)</span><input type="number" id="widthNum" min="120" max="1200" step="8"></div>
         <input type="range" id="widthRange" min="120" max="1200" step="8">
@@ -80,7 +89,7 @@
     const widthNum = $("widthNum"), widthRange = $("widthRange");
     const scaleNum = $("scaleNum"), scaleRange = $("scaleRange");
     const status = $("status"), srcInfo = $("srcInfo");
-    let cfg = null, currentType = "80mm";
+    let cfg = null, currentType = "80mm", currentMode = "raster";
 
     const clampW = (w) => Math.min(1200, Math.max(120, Math.round((Number(w) || 384) / 8) * 8));
     const clampS = (s) => Math.min(3, Math.max(1, Math.round((Number(s) || 1.6) * 100) / 100));
@@ -95,6 +104,16 @@
       const radio = document.querySelector(`input[name=ptype][value="${type}"]`);
       if (radio) radio.checked = true;
     }
+    // NB: scope by container id — the mode cards reuse the .type class, so an
+    // unscoped ".type" query would clear the printer-type selection (and vice versa).
+    function selectModeUI(mode) {
+      document.querySelectorAll("#modes .type").forEach(el => el.classList.toggle("sel", el.dataset.mode === mode));
+      const radio = document.querySelector(`input[name=pmode][value="${mode}"]`);
+      if (radio) radio.checked = true;
+      $("modeHint").innerHTML = mode === "escpos"
+        ? "Raw text in the printer's built-in font — fast, but <b>default layout only</b>: Tax&nbsp;Invoice / UAE layouts, Arabic text and logos cannot be printed this way."
+        : "Prints the receipt as an image, exactly as it looks on screen. Needed for Arabic, logos and the Tax&nbsp;Invoice / UAE layouts.";
+    }
     function fillForm(type) {
       const p = cfg.profiles[type] || { rasterWidth: type === "58mm" ? 384 : 576, scale: 1.6 };
       widthNum.value = p.rasterWidth; widthRange.value = p.rasterWidth;
@@ -108,7 +127,7 @@
       stash(currentType);
       // Bill layout + Full Arabic are managed in the web dashboard now; we only send
       // the physical printer profile. savePrintConfig preserves any legacy values.
-      return { activeType: currentType, profiles: cfg.profiles };
+      return { activeType: currentType, printMode: currentMode, profiles: cfg.profiles };
     }
 
     // sync slider <-> number
@@ -125,11 +144,15 @@
         fillForm(currentType);
       });
     });
+    document.querySelectorAll("input[name=pmode]").forEach(r => {
+      r.addEventListener("change", () => { currentMode = r.value; selectModeUI(currentMode); });
+    });
     $("saveBtn").addEventListener("click", async () => {
       setStatus("Saving…");
       cfg = await window.printSettings.save(buildCfg());
       selectTypeUI(cfg.activeType); currentType = cfg.activeType; fillForm(currentType);
-      setStatus("Saved ✓ (active: " + cfg.activeType + ")", "ok");
+      currentMode = cfg.printMode || "raster"; selectModeUI(currentMode);
+      setStatus("Saved ✓ (" + cfg.activeType + ", " + (currentMode === "escpos" ? "ESC/POS" : "Raster") + ")", "ok");
     });
     $("testBtn").addEventListener("click", async () => {
       setStatus("Printing test…");
@@ -145,6 +168,8 @@
       currentType = cfg.activeType || "80mm";
       selectTypeUI(currentType);
       fillForm(currentType);
+      currentMode = cfg.printMode === "escpos" ? "escpos" : "raster";
+      selectModeUI(currentMode);
     })();
   </script>
 </body>

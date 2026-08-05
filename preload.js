@@ -6,6 +6,24 @@ contextBridge.exposeInMainWorld('api', {
   onUpdateStatus: (callback) => ipcRenderer.on('update-status', (_event, data) => callback(data))
 });
 
+// --- NO PRINTER DIALOG FROM RECEIPT PAGES ---
+// /bill/ and /kot/ call window.print() unless the URL carries ?print=false. The
+// desktop never wants that: it prints these receipts itself as raw ESC/POS via
+// print-raw.exe (straight to the default printer). If the flag is ever missing —
+// an old link, a lost query string — Chromium would pop a printer-selection
+// dialog. Neutralise it: the page still console.logs its payload, which is what
+// the main process actually prints from, so nothing is lost but the dialog.
+// Runs at document-start so it beats the page's own scripts.
+if (window.location.href.includes("/bill/") || window.location.href.includes("/kot/")) {
+  try {
+    window.print = () => {
+      console.log("[cravings] window.print() suppressed - printing via ESC/POS instead");
+    };
+  } catch (e) {
+    /* non-fatal: worst case the dialog appears as before */
+  }
+}
+
 // This listener runs when the web page's content is loaded.
 window.addEventListener("DOMContentLoaded", () => {
 
