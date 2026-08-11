@@ -37,6 +37,27 @@ function logError(error) {
   }
 }
 
+// --- CRASH VISIBILITY ---
+// The app was reported "crashing" with nothing in the logs, which left no way to
+// tell a real crash from the window merely losing focus. Record the things that
+// can take it down, so next time there is evidence instead of a guess.
+process.on("uncaughtException", (err) => {
+  log.error("Uncaught exception:", err);
+  logError(`Uncaught exception: ${err && err.stack ? err.stack : err}`);
+});
+process.on("unhandledRejection", (reason) => {
+  log.error("Unhandled rejection:", reason);
+  logError(`Unhandled rejection: ${reason && reason.stack ? reason.stack : reason}`);
+});
+app.on("render-process-gone", (_e, _wc, details) => {
+  log.error("Renderer gone:", details);
+  logError(`Renderer gone: ${JSON.stringify(details)}`);
+});
+app.on("child-process-gone", (_e, details) => {
+  log.error("Child process gone:", details);
+  logError(`Child process gone: ${JSON.stringify(details)}`);
+});
+
 // --- AUTO-UPDATE LOGIC ---
 function checkForUpdates() {
   // The published releases are built for Windows 10+ (modern Electron), so a Win7/8
@@ -673,6 +694,24 @@ async function printTestSlip() {
 
 const rasterDelay = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Let a pending style/size change take effect before capturing.
+//
+// NB: do NOT use requestAnimationFrame here. These print windows are hidden, and
+// a hidden window is not composited, so rAF is throttled to a crawl — using it
+// made every capture ~3s slower. Instead force a synchronous layout flush (which
+// is what we actually depend on) and give the compositor one short beat. This
+// replaces the old flat 450ms + 300ms sleeps.
+const waitForPaint = async (win, ms = 90) => {
+  try {
+    await win.webContents.executeJavaScript(
+      "(()=>{const el=document.getElementById('printable-content')||document.body;void el.offsetHeight;return true;})()"
+    );
+  } catch {
+    /* page gone; the delay below is still a safe floor */
+  }
+  await rasterDelay(ms);
+};
+
 // True if any printed text field carries characters the ESC/POS text path can't
 // render (anything non-ASCII except the currency symbols it already maps to ASCII).
 function receiptHasUnprintable(order, isBill) {
@@ -726,6 +765,11 @@ function bitmapToRaster(bgra, w, h) {
 // Arabic themselves (the dashboard's Full Arabic setting drives the /bill + /kot pages),
 // and locally-built invoice HTML is already bilingual, so both pass injectArabic=false.
 async function captureReceiptRaster(win, injectArabic = false) {
+  // Stage timings: printing speed is the thing partners feel most, so make it
+  // measurable instead of guessable.
+  const t0 = Date.now();
+  const marks = [];
+  const mark = (name) => marks.push(`${name}=${Date.now() - t0}ms`);
   win.webContents.setZoomFactor(1);
   // The page fetches its order async ("Loading order details...") -> wait for the
   // receipt element to actually render before capturing.
@@ -735,25 +779,36 @@ async function captureReceiptRaster(win, injectArabic = false) {
       const el = document.getElementById('printable-content') || document.body;
       if (el && el.getBoundingClientRect().height > 60) return resolve(true);
       if (Date.now() - started > 20000) return resolve(false);
-      setTimeout(check, 150);
+      setTimeout(check, 25); // tight poll: this gates every print
     };
     check();
   })`);
   if (!ready) log.warn("Receipt element did not render before capture");
+  mark("content");
   await win.webContents.executeJavaScript("(async()=>{try{await document.fonts.ready}catch(e){}return true})()");
+  mark("fonts");
   // Wait for every image (the bill-detail QR data URL, a remote store-logo URL) to
   // be fully DECODED before capturing. img.decode() resolves only once the pixels are
   // ready to paint — `complete`/`naturalWidth` can be true while a large QR is still
   // decoding, which on a slow connection captured a half-drawn QR. Capped at 4s each.
   await win.webContents.executeJavaScript(`(async () => {
-    const imgs = Array.from(document.images || []);
-    await Promise.all(imgs.map((img) => {
-      const decoded = (img.decode ? img.decode() : Promise.resolve()).catch(() => {});
-      const timeout = new Promise((res) => setTimeout(res, 4000));
-      return Promise.race([decoded, timeout]);
-    }));
+    // Only the receipt's own images matter — waiting on unrelated page images just
+    // delays the print. Already-decoded ones are skipped outright, and the whole
+    // wait shares ONE 2.5s deadline instead of 4s per image.
+    const root = document.getElementById('printable-content') || document;
+    const imgs = Array.from(root.querySelectorAll('img'))
+      .filter((img) => !(img.complete && img.naturalWidth > 0 && img.decoding !== 'async'));
+    if (!imgs.length) return true;
+    const deadline = new Promise((res) => setTimeout(res, 2500));
+    await Promise.race([
+      Promise.all(imgs.map((img) =>
+        (img.decode ? img.decode() : Promise.resolve()).catch(() => {})
+      )),
+      deadline,
+    ]);
     return true;
   })()`);
+  mark("images");
   // Full Arabic: translate the static bill/KOT labels to Arabic before capture
   // (legacy path only — see the injectArabic note above).
   if (injectArabic) {
@@ -766,7 +821,10 @@ async function captureReceiptRaster(win, injectArabic = false) {
   await win.webContents.executeJavaScript(
     `(() => { const el = document.getElementById('printable-content'); if (el) el.style.zoom = String(${RASTER_WIDTH} / ${RASTER_SRC_WIDTH}); return true; })()`
   );
-  await rasterDelay(450);
+  // Wait for the zoom to actually paint. Two rAFs land after the next composited
+  // frame, which is the real signal — this used to be a flat 450ms sleep that was
+  // mostly dead time on every single print.
+  await waitForPaint(win);
 
   const rect = await win.webContents.executeJavaScript(`(() => {
     const el = document.getElementById('printable-content') || document.body;
@@ -779,12 +837,17 @@ async function captureReceiptRaster(win, injectArabic = false) {
   const visH = zoomed ? rect.height : Math.ceil(rect.height * zoom);
 
   win.setContentSize(visW + 60, Math.min(rect.y + visH + 30, 6000));
-  await rasterDelay(300);
+  await waitForPaint(win); // was a flat 300ms sleep
 
+  mark("layout");
   let img = await win.webContents.capturePage({ x: rect.x, y: rect.y, width: visW, height: visH });
   if (img.getSize().width !== RASTER_WIDTH) img = img.resize({ width: RASTER_WIDTH, quality: "best" });
+  mark("capture");
   const size = img.getSize();
-  return bitmapToRaster(img.toBitmap(), size.width, size.height);
+  const out = bitmapToRaster(img.toBitmap(), size.width, size.height);
+  mark("encode");
+  log.info(`[timing] raster ${marks.join(" ")} total=${Date.now() - t0}ms`);
+  return out;
 }
 
 
@@ -816,6 +879,8 @@ function createWindow() {
   // Runs the whole hidden-window print pipeline for one /bill/ or /kot/ URL.
   const startPrintJob = (url) => {
       console.log(`Intercepted URL for printing: ${url}`);
+      const jobT0 = Date.now();
+      const since = () => `${Date.now() - jobT0}ms`;
 
       const backgroundWindow = new BrowserWindow({
         show: false,
@@ -845,7 +910,9 @@ function createWindow() {
         printUrl = `${url}${sep}print=false&w=${RASTER_SRC_WIDTH}px`;
       }
       backgroundWindow.loadURL(printUrl);
-      
+      backgroundWindow.webContents.once("did-finish-load", () =>
+        log.info(`[timing] page loaded @${since()}`));
+
       // Capture console messages -> build ESC/POS text OR a raster image
       let printHandled = false;
       backgroundWindow.webContents.on('console-message', async (event, level, message, line, sourceId) => {
@@ -873,7 +940,7 @@ function createWindow() {
           try {
               orderData = JSON.parse(jsonStr);
               jobName = (isBill ? "bill_" : "kot_") + orderData.id;
-              log.info(`Received ${isBill ? "Bill" : "KOT"} JSON:`, orderData.id);
+              log.info(`Received ${isBill ? "Bill" : "KOT"} JSON:`, orderData.id, `[timing] payload@${since()}`);
 
               // Layout + Full Arabic are now chosen in the web dashboard and travel in
               // the print payload. A boolean `full_arabic` in the payload means this is a
@@ -970,7 +1037,7 @@ function createWindow() {
                         return;
                       }
                       
-                      log.info("Raw printing output:", stdout);
+                      log.info("Raw printing output:", stdout, `[timing] TOTAL job=${since()}`);
                       
                       mainWindow.webContents.send("print-status", {
                         success: true,
@@ -1009,21 +1076,71 @@ function createWindow() {
   // heads for a print route — before the page can fire its own window.print().
   const watchClaimedPrintWindow = (child) => {
     let taken = false;
+    // Was the app in front when this tab was claimed? The claim happens inside
+    // the user's click, so normally yes — and that is what we restore to after
+    // the popup is torn down.
+    let appHadFocus = false;
+    try {
+      appHadFocus = !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused());
+    } catch { /* ignore */ }
+
+    // These tabs are a printing implementation detail and must never be seen.
+    // `show:false` in overrideBrowserWindowOptions is not always honoured for
+    // window.open-created windows, which is how the "Preparing bill…" placeholder
+    // flashed up as a popup — so hide it explicitly, and keep it hidden.
+    const keepHidden = () => {
+      try { if (!child.isDestroyed() && child.isVisible()) child.hide(); } catch { /* gone */ }
+    };
+    log.info(`Claimed tab created (visible=${(() => { try { return child.isVisible(); } catch { return "?"; } })()})`);
+    keepHidden();
+    child.on("show", keepHidden);
+    child.once("ready-to-show", keepHidden);
 
     const takeOver = (event, navUrl) => {
       if (taken || child.isDestroyed()) return;
       if (!isPrintUrl(navUrl)) {
-        // Not a print document after all: an ordinary popup that happened to be
-        // claimed blank. Never leave it invisible.
+        // about:blank is the claim itself, not a destination — the tab is opened
+        // blank and navigated a moment later. Showing on THAT is what flashed a
+        // "Preparing bill…" popup on screen during every print.
+        if (isClaimedBlank(navUrl)) return;
+        // A genuine non-print popup: reveal it rather than strand it invisible.
+        log.info(`Claimed tab went to a non-print URL (${navUrl}); showing it`);
         if (!child.isVisible()) child.show();
         return;
       }
       taken = true;
       if (event && !event.defaultPrevented) event.preventDefault();
-      try { child.webContents.stop(); } catch { /* already gone */ }
       log.info(`Claimed print window heading to ${navUrl}; taking over`);
       startPrintJob(navUrl);
-      if (!child.isDestroyed()) child.close();
+
+      // Tear the claimed window down on a LATER TICK. Stopping/closing a window
+      // from inside its own webContents event is a well-known way to crash
+      // Electron — the navigation is still being dispatched on that very
+      // webContents. Deferring gets us out of that stack first.
+      setImmediate(() => {
+        try {
+          if (!child.isDestroyed()) {
+            child.webContents.stop();
+            child.close();
+          }
+        } catch { /* already gone */ }
+        // Closing a popup can hand focus to whatever is behind us, which looks
+        // like the app "going to the background". Put the dashboard back in
+        // front — but only if the app still owns focus, so we never yank the
+        // user out of another app they deliberately switched to.
+        try {
+          if (
+            mainWindow &&
+            !mainWindow.isDestroyed() &&
+            !mainWindow.isFocused() &&
+            !mainWindow.isMinimized() &&
+            appHadFocus
+          ) {
+            mainWindow.show();
+            mainWindow.focus();
+          }
+        } catch { /* window went away */ }
+      });
     };
 
     child.webContents.on("will-navigate", takeOver);
@@ -1049,7 +1166,15 @@ function createWindow() {
     if (isClaimedBlank(url)) {
       return {
         action: "allow",
-        overrideBrowserWindowOptions: { show: false, parent: mainWindow },
+        overrideBrowserWindowOptions: {
+          show: false,
+          parent: mainWindow,
+          // These tabs exist only to be taken over for printing. Keep them out
+          // of the taskbar and unable to take focus, so clicking Print never
+          // pulls the dashboard out from under the user.
+          focusable: false,
+          skipTaskbar: true,
+        },
       };
     }
     return { action: "allow" };
@@ -1114,6 +1239,54 @@ function applyOrderSoundMute() {
   }
 }
 
+// Play the new-order alert on demand so a counter can check the speakers without
+// waiting for a real order. Runs in the dashboard window itself, so it exercises
+// the exact path the alarm uses — same page, same audio output, same mute state.
+// Prefers the page's own Howl (what the alarm actually plays) and falls back to a
+// plain Audio element if the dashboard isn't loaded yet.
+function testOrderSound() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    log.warn("Test sound: app window not ready");
+    return;
+  }
+  if (printConfig.muteOrderSound) {
+    log.info("Test sound: skipped, sound is muted");
+    mainWindow.webContents.send("print-status", {
+      success: false,
+      message: "Sound is muted — untick 'Mute new-order sound' first",
+    });
+    return;
+  }
+
+  const js = `(async () => {
+    try {
+      const H = window.Howler;
+      const h = H && H._howls && H._howls.find(
+        (x) => String(x._src || x._origSrc || "").indexOf("custom_sound") !== -1
+      );
+      if (h) { h.stop(); h.play(); setTimeout(() => h.stop(), 5000); return "howl"; }
+      const a = new Audio("/audio/custom_sound.mp3");
+      await a.play();
+      setTimeout(() => { try { a.pause(); } catch (e) {} }, 5000);
+      return "audio";
+    } catch (e) { return "error: " + ((e && e.message) || e); }
+  })()`;
+
+  // userGesture=true: a real gesture lets Chromium resume a suspended Web Audio
+  // context, which is what Howler plays through.
+  mainWindow.webContents
+    .executeJavaScript(js, true)
+    .then((how) => {
+      log.info(`Test sound: ${how}`);
+      const ok = how === "howl" || how === "audio";
+      mainWindow.webContents.send("print-status", {
+        success: ok,
+        message: ok ? "Playing test sound 🔊" : `Could not play sound (${how})`,
+      });
+    })
+    .catch((e) => log.warn("Test sound failed:", e.message));
+}
+
 function setOrderSoundMuted(muted) {
   savePrintConfig({ ...printConfig, muteOrderSound: !!muted });
   applyOrderSoundMute();
@@ -1138,6 +1311,8 @@ function buildAppMenu() {
     {
       label: "Sound",
       submenu: [
+        { label: "Test sound", click: () => testOrderSound() },
+        { type: "separator" },
         {
           label: "Mute new-order sound",
           type: "checkbox",
@@ -1153,6 +1328,7 @@ function refreshTrayMenu() {
   if (!tray || tray.isDestroyed()) return;
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "Printer Settings", click: () => openSettingsWindow() },
+    { label: "Test sound", click: () => testOrderSound() },
     {
       label: "Mute new-order sound",
       type: "checkbox",
