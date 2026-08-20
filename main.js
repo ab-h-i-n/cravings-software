@@ -6,6 +6,7 @@ const { execFile } = require("child_process");
 const { arabicLabelScript } = require("./arabicLabels");
 const { buildInvoiceHtml } = require("./billInvoice");
 const { buildUaeInvoiceHtml } = require("./billInvoiceUae");
+const { deliveryBoyScript } = require("./deliveryBoyBlock");
 
 // 1. Import electron-log
 const log = require("electron-log");
@@ -351,8 +352,28 @@ function convertBillToEscPos(bill) {
       if(bill.customer_phone) buffer += textLine(`Ph  : ${bill.customer_phone}`);
       if(bill.delivery_address) {
           buffer += textLine("Address:");
-          buffer += textLine(bill.delivery_address);
+          // Wrap at spaces — an address is long and the printer would otherwise
+          // chop it mid-word at the column limit.
+          escposWrap(replaceSpecialChars(bill.delivery_address), WIDTH)
+            .forEach((ln) => { buffer += textLine(ln); });
       }
+  }
+
+  // Delivery Boy — part of the order details, right under the customer/address
+  // block, between two rules. NOT down by the delivery-location QR: that QR is
+  // printed in the footer of the text layout, which pushed this to the bottom of
+  // the receipt (on the web page the location sits inside Order Details, which is
+  // what made the two layouts disagree).
+  //
+  // The web /bill payload carries `delivery_boy` only when the partner turned the
+  // Bill Printing toggle on AND a rider is assigned, so its presence IS the
+  // instruction to print; nothing is re-derived here.
+  if (bill.delivery_boy && (bill.delivery_boy.name || bill.delivery_boy.phone)) {
+      buffer += textLine("-".repeat(WIDTH));
+      buffer += BOLD_ON + textLine("Delivery Boy") + BOLD_OFF;
+      if (bill.delivery_boy.name) buffer += textLine(`Name: ${bill.delivery_boy.name}`);
+      if (bill.delivery_boy.phone) buffer += textLine(`Ph  : ${bill.delivery_boy.phone}`);
+      buffer += textLine("-".repeat(WIDTH));
   }
 
   // Notes
@@ -493,6 +514,14 @@ function convertBillToEscPos(bill) {
   buffer += LF + LF + LF;
   buffer += CUT_FULL;
   
+  // Two sections in a row each drawing their own rule leaves a doubled line and
+  // wastes paper; keep the first, drop the repeat. Only lines that are exactly a
+  // rule are touched, so QR payloads and everything else pass through untouched.
+  {
+    const rule = "-".repeat(WIDTH);
+    const parts = buffer.split(LF);
+    buffer = parts.filter((ln, i) => !(ln === rule && parts[i - 1] === rule)).join(LF);
+  }
   return Buffer.from(buffer, "ascii");
 }
 
@@ -764,7 +793,7 @@ function bitmapToRaster(bgra, w, h) {
 // for OLD web builds that render the labels in English — current builds already render
 // Arabic themselves (the dashboard's Full Arabic setting drives the /bill + /kot pages),
 // and locally-built invoice HTML is already bilingual, so both pass injectArabic=false.
-async function captureReceiptRaster(win, injectArabic = false) {
+async function captureReceiptRaster(win, injectArabic = false, deliveryBoy = null) {
   // Stage timings: printing speed is the thing partners feel most, so make it
   // measurable instead of guessable.
   const t0 = Date.now();
@@ -785,6 +814,15 @@ async function captureReceiptRaster(win, injectArabic = false) {
   })`);
   if (!ready) log.warn("Receipt element did not render before capture");
   mark("content");
+  // The page never renders the rider block itself — add it before capturing.
+  if (deliveryBoy && (deliveryBoy.name || deliveryBoy.phone)) {
+    try {
+      const where = await win.webContents.executeJavaScript(deliveryBoyScript(deliveryBoy));
+      log.info(`Delivery Boy block: ${where}`);
+    } catch (e) {
+      log.warn("Delivery Boy block injection failed:", e.message);
+    }
+  }
   await win.webContents.executeJavaScript("(async()=>{try{await document.fonts.ready}catch(e){}return true})()");
   mark("fonts");
   // Wait for every image (the bill-detail QR data URL, a remote store-logo URL) to
@@ -972,7 +1010,7 @@ function createWindow() {
                   if (webRendered) {
                       // The live /bill page already rendered this layout — capture it as-is.
                       log.info(`Using ${layout} bill layout raster print (web-rendered)`);
-                      escPosBuffer = await captureReceiptRaster(backgroundWindow, false);
+                      escPosBuffer = await captureReceiptRaster(backgroundWindow, false, isBill ? orderData.delivery_boy : null);
                   } else {
                       // Legacy web build: render the layout HTML from the order data,
                       // load it into the hidden window, raster.
@@ -983,7 +1021,7 @@ function createWindow() {
                         : path.join(__dirname, "temp_invoice.html");
                       fs.writeFileSync(tmpHtml, html);
                       await backgroundWindow.loadFile(tmpHtml);
-                      escPosBuffer = await captureReceiptRaster(backgroundWindow, false);
+                      escPosBuffer = await captureReceiptRaster(backgroundWindow, false, isBill ? orderData.delivery_boy : null);
                   }
               } else if (fullArabic || receiptHasUnprintable(orderData, isBill) || (isBill && orderData.bill_logo_url)) {
                   // Non-ASCII text (Arabic item names / Full Arabic labels) OR a bill logo
@@ -991,13 +1029,13 @@ function createWindow() {
                   // as ESC/POS text. Current builds already rendered Arabic; only legacy
                   // builds need injection.
                   log.info(`Using raster image print (fullArabic=${fullArabic}, logo=${!!orderData.bill_logo_url}, webRendered=${webRendered})`);
-                  escPosBuffer = await captureReceiptRaster(backgroundWindow, fullArabic && !webRendered);
+                  escPosBuffer = await captureReceiptRaster(backgroundWindow, fullArabic && !webRendered, isBill ? orderData.delivery_boy : null);
               } else {
                   // Raster mode with nothing special on the receipt: still print as an
                   // image so "Raster" means raster — what you see on /bill is what the
                   // printer produces. ESC/POS text is reached only via printMode.
                   log.info("Using raster image print (raster mode)");
-                  escPosBuffer = await captureReceiptRaster(backgroundWindow, false);
+                  escPosBuffer = await captureReceiptRaster(backgroundWindow, false, isBill ? orderData.delivery_boy : null);
               }
           } catch (e) {
               log.error("Error building print payload", e);

@@ -1,6 +1,6 @@
 {
   "name": "cravings-desktop",
-  "version": "1.4.2",
+  "version": "1.4.4",
   "description": "Desktop application for Cravings.live",
   "homepage": "https://www.cravings.live",
   "main": "main.js",
@@ -29,6 +29,7 @@
       "arabicLabels.js",
       "billInvoice.js",
       "billInvoiceUae.js",
+      "deliveryBoyBlock.js",
       "settings.html",
       "settings-preload.js",
       "test-receipt.html",
