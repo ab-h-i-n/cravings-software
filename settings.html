@@ -27,6 +27,20 @@
     input[type=range] { width:100%; accent-color:var(--accent); }
     input[type=number] { width:78px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px; }
     .hint { color:var(--muted); font-size:11px; margin-top:4px; }
+    .plist { border:1px solid var(--line); border-radius:8px; max-height:170px; overflow:auto; background:#fff; }
+    .prow { display:flex; gap:8px; align-items:center; padding:6px 9px; font-size:13px; cursor:pointer; border-bottom:1px solid #f1f1f3; }
+    .prow:last-child { border-bottom:none; }
+    .prow:hover { background:#faf9f8; }
+    .prow input { width:15px; height:15px; accent-color:var(--accent); flex-shrink:0; }
+    .prow .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .prow .df { color:var(--muted); font-size:10px; flex-shrink:0; }
+    .prow .cp { width:44px; padding:2px 4px; border:1px solid var(--line); border-radius:5px;
+                font-size:12px; text-align:center; flex-shrink:0; }
+    .prow .cp:disabled { opacity:.35; }
+    .prow .cx { color:var(--muted); font-size:10px; flex-shrink:0; }
+    .phead { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+    .mini { padding:4px 10px; font-size:11px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; font-weight:600; }
+    .mini:hover { background:#f0f0f2; }
     .chk { display:flex; gap:9px; align-items:flex-start; font-size:13px; cursor:pointer; }
     .chk input { margin-top:2px; width:16px; height:16px; accent-color:var(--accent); }
     .chk .h { color:var(--muted); font-size:11px; margin-top:2px; }
@@ -63,6 +77,26 @@
     </div>
 
     <div class="card">
+      <div class="phead">
+        <span class="lbl" style="margin:0">Bill printer</span>
+        <span>
+          <button class="mini" id="refreshBtn">Refresh list</button>
+          <button class="mini" id="testBillBtn">Test</button>
+        </span>
+      </div>
+      <div class="hint" id="printerCount" style="margin:0 0 6px"></div>
+      <div class="plist" id="billPrinters"></div>
+      <div class="hint">Tick every printer the <b>bill</b> should come out of. Nothing ticked = Windows default printer.</div>
+
+      <div class="phead" style="margin-top:14px">
+        <span class="lbl" style="margin:0">KOT printer</span>
+        <button class="mini" id="testKotBtn">Test</button>
+      </div>
+      <div class="plist" id="kotPrinters"></div>
+      <div class="hint">Tick more than one to print the same document in two places — e.g. the counter printer takes the bill <i>and</i> the KOT, while the kitchen printer takes only the KOT. Use <b>x</b> for copies: set the kitchen printer to <b>2</b> to get two KOTs from it.</div>
+    </div>
+
+    <div class="card">
       <div class="row">
         <div class="rowhead"><span class="lbl" style="margin:0">Width (dots)</span><input type="number" id="widthNum" min="120" max="1200" step="8"></div>
         <input type="range" id="widthRange" min="120" max="1200" step="8">
@@ -95,6 +129,81 @@
     const clampS = (s) => Math.min(3, Math.max(1, Math.round((Number(s) || 1.6) * 100) / 100));
 
     function setStatus(msg, kind) { status.textContent = msg; status.className = "status" + (kind ? " " + kind : ""); }
+
+    let printers = [];
+    // A checkbox per installed printer, so the same device can be ticked for both
+    // documents (counter printer = bill + KOT) while another takes only one.
+    function renderPrinterList(containerId, selected) {
+      const box = $(containerId);
+      box.innerHTML = "";
+      if (!printers.length) {
+        box.innerHTML = '<div class="prow"><span class="nm" style="color:#6b6b70">No printers found</span></div>';
+        return;
+      }
+      printers.forEach((p) => {
+        const row = document.createElement("label");
+        row.className = "prow";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = p.name;
+        const sel = selected.find((x) => x && x.name === p.name);
+        cb.checked = !!sel;
+        const nm = document.createElement("span");
+        nm.className = "nm";
+        nm.textContent = p.displayName || p.name;
+        nm.title = p.name;
+        row.appendChild(cb); row.appendChild(nm);
+        if (p.isDefault) {
+          const df = document.createElement("span");
+          df.className = "df"; df.textContent = "default";
+          row.appendChild(df);
+        }
+        // Copies of this document on THIS printer — e.g. two KOTs for the kitchen.
+        const times = document.createElement("span");
+        times.className = "cx"; times.textContent = "x";
+        const cp = document.createElement("input");
+        cp.type = "number"; cp.className = "cp"; cp.min = "1"; cp.max = "5"; cp.step = "1";
+        cp.value = String(sel ? (sel.copies || 1) : 1);
+        cp.disabled = !cb.checked;
+        cp.title = "Copies on this printer";
+        // Clicking the number must not toggle the row's checkbox (it is a <label>).
+        cp.addEventListener("click", (e) => e.preventDefault());
+        cb.addEventListener("change", () => { cp.disabled = !cb.checked; });
+        row.appendChild(times); row.appendChild(cp);
+        box.appendChild(row);
+      });
+    }
+    // Re-queryable: a printer added in Windows after this window opened, or a
+    // short list from an early query, is one click away from being fixed.
+    async function loadPrinters() {
+      const keepBill = pickedPrinters("billPrinters");
+      const keepKot = pickedPrinters("kotPrinters");
+      let error = null;
+      try {
+        const res = await window.printSettings.printers();
+        // Older builds returned a bare array; current ones return {printers,error}.
+        printers = Array.isArray(res) ? res : ((res && res.printers) || []);
+        error = (res && res.error) || null;
+      } catch (e) {
+        printers = []; error = e && e.message;
+      }
+      $("printerCount").textContent = printers.length
+        ? `${printers.length} printer${printers.length > 1 ? "s" : ""} found on this PC`
+          + (error ? " (partial: " + error + ")" : "")
+        : (error ? "Could not read printers: " + error
+                 : "No printers found - add the printer in Windows, then press Refresh list");
+      // Keep whatever was already ticked, falling back to the saved config.
+      renderPrinterList("billPrinters", keepBill.length ? keepBill : (cfg.billPrinters || []));
+      renderPrinterList("kotPrinters", keepKot.length ? keepKot : (cfg.kotPrinters || []));
+    }
+
+    const pickedPrinters = (containerId) =>
+      Array.from($(containerId).querySelectorAll(".prow"))
+        .filter((row) => row.querySelector('input[type=checkbox]').checked)
+        .map((row) => ({
+          name: row.querySelector('input[type=checkbox]').value,
+          copies: Math.min(5, Math.max(1, parseInt(row.querySelector(".cp").value, 10) || 1)),
+        }));
     function updateSrcInfo() {
       const w = clampW(widthNum.value), s = clampS(scaleNum.value);
       srcInfo.textContent = "Layout ≈ " + Math.round(w / s) + " px.";
@@ -127,7 +236,13 @@
       stash(currentType);
       // Bill layout + Full Arabic are managed in the web dashboard now; we only send
       // the physical printer profile. savePrintConfig preserves any legacy values.
-      return { activeType: currentType, printMode: currentMode, profiles: cfg.profiles };
+      return {
+        activeType: currentType,
+        printMode: currentMode,
+        billPrinters: pickedPrinters("billPrinters"),
+        kotPrinters: pickedPrinters("kotPrinters"),
+        profiles: cfg.profiles,
+      };
     }
 
     // sync slider <-> number
@@ -152,8 +267,26 @@
       cfg = await window.printSettings.save(buildCfg());
       selectTypeUI(cfg.activeType); currentType = cfg.activeType; fillForm(currentType);
       currentMode = cfg.printMode || "raster"; selectModeUI(currentMode);
+      renderPrinterList("billPrinters", cfg.billPrinters || []);
+      renderPrinterList("kotPrinters", cfg.kotPrinters || []);
       setStatus("Saved ✓ (" + cfg.activeType + ", " + (currentMode === "escpos" ? "ESC/POS" : "Raster") + ")", "ok");
     });
+    const runTest = async (which) => {
+      setStatus("Printing test…");
+      cfg = await window.printSettings.save(buildCfg()); // apply current picks first
+      const res = await window.printSettings.test(which);
+      setStatus(res.ok ? `Test sent to ${res.message || "printer"} 🖨️`
+                       : ("Test failed: " + (res.error || "")), res.ok ? "ok" : "err");
+    };
+    $("refreshBtn").addEventListener("click", async (e) => {
+      e.preventDefault();
+      setStatus("Reading printers…");
+      await loadPrinters();
+      setStatus("Printer list refreshed", "ok");
+    });
+    $("testBillBtn").addEventListener("click", (e) => { e.preventDefault(); runTest("bill"); });
+    $("testKotBtn").addEventListener("click", (e) => { e.preventDefault(); runTest("kot"); });
+
     $("testBtn").addEventListener("click", async () => {
       setStatus("Printing test…");
       cfg = await window.printSettings.save(buildCfg()); // apply current values first
@@ -170,6 +303,7 @@
       fillForm(currentType);
       currentMode = cfg.printMode === "escpos" ? "escpos" : "raster";
       selectModeUI(currentMode);
+      await loadPrinters();
     })();
   </script>
 </body>

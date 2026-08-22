@@ -91,7 +91,7 @@ public class RawPrinterHelper
     {
         if (args.Length < 1)
         {
-            Console.WriteLine("Usage: print-raw.exe <path_to_file>");
+            Console.WriteLine("Usage: print-raw.exe <path_to_file> [printer_name]");
             return;
         }
 
@@ -102,14 +102,28 @@ public class RawPrinterHelper
             return;
         }
 
-        // Get default printer
-        PrinterSettings settings = new PrinterSettings();
-        string defaultPrinter = settings.PrinterName;
-        
-        Console.WriteLine("Printing " + filePath + " to " + defaultPrinter);
-        
-        bool success = SendFileToPrinter(defaultPrinter, filePath);
-        
+        // Optional second argument: which printer to send to. Omitted (or empty)
+        // keeps the original behaviour of using the Windows default printer, so
+        // older callers are unaffected. Quoted names arrive already unquoted by
+        // the shell; join the rest in case a name contains spaces and the caller
+        // did not quote it.
+        string printerName = null;
+        if (args.Length > 1)
+        {
+            printerName = string.Join(" ", args, 1, args.Length - 1).Trim();
+            if (printerName.Length == 0) printerName = null;
+        }
+
+        if (printerName == null)
+        {
+            PrinterSettings settings = new PrinterSettings();
+            printerName = settings.PrinterName;
+        }
+
+        Console.WriteLine("Printing " + filePath + " to " + printerName);
+
+        bool success = SendFileToPrinter(printerName, filePath);
+
         if(success) Console.WriteLine("Success");
         else Console.WriteLine("Failed");
     }

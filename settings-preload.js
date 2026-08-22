@@ -5,6 +5,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("printSettings", {
   get: () => ipcRenderer.invoke("print-config:get"),
   save: (cfg) => ipcRenderer.invoke("print-config:save", cfg),
-  test: () => ipcRenderer.invoke("print-config:test"),
+  test: (which) => ipcRenderer.invoke("print-config:test", which),
+  printers: () => ipcRenderer.invoke("print-config:printers"),
   close: () => ipcRenderer.send("settings:close"),
 });

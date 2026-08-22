@@ -135,6 +135,23 @@ function escposCharsPerLine() {
   return printConfig && printConfig.activeType === "58mm" ? 32 : 48;
 }
 
+// The web payload formats times with en-GB, i.e. 24-hour ("13:40"). Counter
+// staff read the clock, so print 12-hour. Anything that is not a plain HH:MM —
+// including a string that already carries am/pm — is passed through untouched.
+function to12Hour(value) {
+  const raw = String(value == null ? "" : value).trim();
+  if (!raw) return "";
+  if (/[ap]\.?m\.?/i.test(raw)) return raw;
+  const m = raw.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return raw;
+  let hour = parseInt(m[1], 10);
+  if (!Number.isFinite(hour) || hour > 23) return raw;
+  const period = hour >= 12 ? "PM" : "AM";
+  hour = hour % 12;
+  if (hour === 0) hour = 12;
+  return hour + ":" + m[2] + " " + period;
+}
+
 // Break text at spaces instead of letting the printer chop it mid-word.
 function escposWrap(str, width) {
   const words = String(str == null ? "" : str).split(/\s+/).filter(Boolean);
@@ -208,18 +225,30 @@ function convertOrderToEscPos(order) {
   buffer += BOLD_OFF;
   buffer += textLine("-".repeat(WIDTH)); 
   
-  // 3. Table Name / Number
-  buffer += ALIGN_CENTER;
-  buffer += BOLD_ON;
-  buffer += textLine(order.table_name || (order.table_number ? `Table ${order.table_number}` : "N/A"));
-  buffer += BOLD_OFF;
-  buffer += textLine("-".repeat(WIDTH));
+  // 3. Table Name / Number — only when there IS one. A delivery or takeaway
+  // order has no table, and printing a bold "N/A" between two rules just puts a
+  // meaningless line at the top of every such ticket.
+  const tableLabelOrder = order.table_name || (order.table_number ? `Table ${order.table_number}` : "");
+  if (tableLabelOrder) {
+    buffer += ALIGN_CENTER;
+    buffer += BOLD_ON;
+    buffer += textLine(tableLabelOrder);
+    buffer += BOLD_OFF;
+    buffer += textLine("-".repeat(WIDTH));
+  }
 
   // 4. Order Info
   buffer += ALIGN_LEFT;
-  buffer += textLine(`Order: ${order.display_id || order.id.slice(0, 8)}`);
+  // The Order line carries the short order ID — that is what matches the
+  // dashboard and support tickets. Falls back to the display number only if an
+  // order somehow has no id.
+  const kotShortId = String(order.id || "").slice(0, 8);
+  const kotOrderNo = order.display_id || "";
+  buffer += textLine(`Order: ${kotShortId ? "#" + kotShortId : kotOrderNo}`);
   buffer += textLine(`Type : ${order.type}`);
-  buffer += textLine(`Date : ${order.created_at}`);
+  // When the order was placed. The KOT had no time at all, so the kitchen could
+  // not tell a fresh ticket from one that had been sitting on the spike.
+  if (order.time) buffer += textLine(`Time : ${to12Hour(order.time)}`);
 
   if(order.notes) {
       buffer += textLine(" ");
@@ -256,7 +285,10 @@ function convertOrderToEscPos(order) {
   
   // 5. Footer
   buffer += ALIGN_CENTER;
-  buffer += textLine(`Generated at: ${order.generated_at || new Date().toLocaleString()}`);
+  // Wrap at spaces: a full date+time runs past 32 columns on a 58mm roll and the
+  // printer would otherwise break it mid-word.
+  escposWrap(`Generated at: ${order.generated_at || new Date().toLocaleString()}`, WIDTH)
+    .forEach((ln) => { buffer += textLine(ln); });
   
   if (order.display_id && Number(order.display_id) > 0) {
        buffer += textLine(`ID: ${order.id.slice(0, 8)}`);
@@ -329,17 +361,28 @@ function convertBillToEscPos(bill) {
   
   buffer += textLine("-".repeat(WIDTH));
   
-  // 3. Table Name / Number
-  buffer += ALIGN_CENTER;
-  buffer += BOLD_ON;
-  buffer += textLine(bill.table_name || (bill.table_number ? `Table ${bill.table_number}` : "N/A"));
-  buffer += BOLD_OFF;
-  buffer += textLine("-".repeat(WIDTH));
+  // 3. Table Name / Number — only when there IS one. A delivery or takeaway
+  // order has no table, and printing a bold "N/A" between two rules just puts a
+  // meaningless line at the top of every such ticket.
+  const tableLabelBill = bill.table_name || (bill.table_number ? `Table ${bill.table_number}` : "");
+  if (tableLabelBill) {
+    buffer += ALIGN_CENTER;
+    buffer += BOLD_ON;
+    buffer += textLine(tableLabelBill);
+    buffer += BOLD_OFF;
+    buffer += textLine("-".repeat(WIDTH));
+  }
 
   // 4. Bill Info
   buffer += ALIGN_LEFT;
-  buffer += pair(`Order: ${bill.display_id || bill.id.slice(0, 8)}`, "");
-  buffer += pair(`Date : ${bill.created_at}`, `Time: ${bill.time || ""}`);
+  // The Order line carries the short order ID — see the KOT note above.
+  const billShortId = String(bill.id || "").slice(0, 8);
+  const billOrderNo = bill.display_id || "";
+  buffer += pair(`Order: ${billShortId ? "#" + billShortId : billOrderNo}`, "");
+  // The bill keeps the order number and the date; only the KOT was trimmed down
+  // to the id + type + time the kitchen actually needs.
+  if (billOrderNo && billShortId) buffer += pair(`No.  : ${billOrderNo}`, "");
+  buffer += pair(`Date : ${bill.created_at}`, `Time: ${to12Hour(bill.time)}`);
 
   buffer += pair(`Type : ${bill.type}`, "");
   if(bill.payment_method) buffer += pair(`Pay  : ${bill.payment_method}`, "");
@@ -552,6 +595,15 @@ const DEFAULT_PRINT_CONFIG = {
   billLayout: "default",
   // Silences the looping new-order alarm the dashboard plays (webContents audio).
   muteOrderSound: false,
+  // Which Windows printers each document goes to. A LIST, because the same
+  // document often has to come out in two places at once — e.g. the counter
+  // printer takes both the bill and the KOT while the kitchen printer takes only
+  // the KOT. An empty list means "the system default printer", which is what
+  // every install did before this existed, so an untouched setup is unchanged.
+  // Entries are { name, copies } — copies because a kitchen often wants the same
+  // KOT twice on one printer. Empty list = one copy on the system default.
+  billPrinters: [],
+  kotPrinters: [],
   // How receipts are sent to the printer:
   //   "raster" (default) — render the page to a GS v 0 bitmap. Handles Arabic,
   //                        logos and the invoice/uae bill layouts.
@@ -583,6 +635,9 @@ function printConfigPath() {
 
 const clampWidth = (w) => Math.min(1200, Math.max(120, Math.round((Number(w) || 384) / 8) * 8));
 const clampScale = (s) => Math.min(3, Math.max(1, Math.round((Number(s) || 1.6) * 100) / 100));
+// Copies of one document on one printer. 1 when unset (every historical config),
+// capped so a stray keystroke cannot dump a roll of paper.
+const normalizeCopies = (n) => Math.min(5, Math.max(1, Math.round(Number(n) || 1)));
 
 function loadPrintConfig() {
   const cfg = JSON.parse(JSON.stringify(DEFAULT_PRINT_CONFIG));
@@ -604,6 +659,29 @@ function loadPrintConfig() {
       if (parsed.activeType === "58mm" || parsed.activeType === "80mm") cfg.activeType = parsed.activeType;
       if (typeof parsed.fullArabic === "boolean") cfg.fullArabic = parsed.fullArabic;
       if (typeof parsed.muteOrderSound === "boolean") cfg.muteOrderSound = parsed.muteOrderSound;
+      // Three shapes exist in the wild and all must keep working:
+      //   "Printer"                     - the original single-name key
+      //   ["A", "B"]                    - the plain list
+      //   [{ name: "A", copies: 2 }]    - current, with copies
+      const printerList = (v) => {
+        const raw = Array.isArray(v) ? v : (typeof v === "string" && v.trim() ? [v] : null);
+        if (!raw) return null;
+        const out = [];
+        for (const entry of raw) {
+          const name = typeof entry === "string" ? entry.trim()
+            : (entry && typeof entry.name === "string" ? entry.name.trim() : "");
+          if (!name) continue;
+          const copies = normalizeCopies(entry && entry.copies);
+          const seen = out.find((o) => o.name === name);
+          if (seen) seen.copies = copies; // one entry per printer; last wins
+          else out.push({ name, copies });
+        }
+        return out;
+      };
+      const bp = printerList(parsed.billPrinters) || printerList(parsed.billPrinter);
+      const kp = printerList(parsed.kotPrinters) || printerList(parsed.kotPrinter);
+      if (bp) cfg.billPrinters = bp;
+      if (kp) cfg.kotPrinters = kp;
       if (parsed.printMode === "raster" || parsed.printMode === "escpos") cfg.printMode = parsed.printMode;
       if (isValidBillLayout(parsed.billLayout)) cfg.billLayout = parsed.billLayout;
     } else {
@@ -641,6 +719,24 @@ function savePrintConfig(incoming) {
     ? incoming.muteOrderSound : printConfig.muteOrderSound;
   clean.printMode = (incoming && (incoming.printMode === "raster" || incoming.printMode === "escpos"))
     ? incoming.printMode : printConfig.printMode;
+  const cleanPrinters = (v, fallback) => {
+    if (!Array.isArray(v)) return fallback;
+    const out = [];
+    for (const entry of v) {
+      const name = typeof entry === "string" ? entry.trim()
+        : (entry && typeof entry.name === "string" ? entry.name.trim() : "");
+      if (!name) continue;
+      const copies = normalizeCopies(entry && entry.copies);
+      // One entry per printer — two copies are expressed by `copies`, never by
+      // listing the same printer twice.
+      const seen = out.find((o) => o.name === name);
+      if (seen) seen.copies = copies;
+      else out.push({ name, copies });
+    }
+    return out;
+  };
+  clean.billPrinters = cleanPrinters(incoming && incoming.billPrinters, printConfig.billPrinters);
+  clean.kotPrinters = cleanPrinters(incoming && incoming.kotPrinters, printConfig.kotPrinters);
   for (const k of ["58mm", "80mm"]) {
     const src = (incoming && incoming.profiles && incoming.profiles[k]) || printConfig.profiles[k] || DEFAULT_PRINT_CONFIG.profiles[k];
     clean.profiles[k] = { rasterWidth: clampWidth(src.rasterWidth), scale: clampScale(src.scale) };
@@ -668,7 +764,11 @@ const SAMPLE_ORDER = {
 
 // Test print: render a sample receipt through the REAL raster pipeline at the current
 // Width + Scale + Layout, so tuning is reflected on paper exactly like a live bill.
-async function printTestSlip() {
+// `which` picks the target: "bill" or "kot", so each configured printer can be
+// verified on its own rather than guessing which device a test slip came out of.
+async function printTestSlip(which = "bill") {
+  const isBill = which !== "kot";
+  const testTargets = printersFor(isBill);
   // ESC/POS mode: test the mode that will actually be used — raw text in the
   // printer's own font, default layout. No page render is involved at all.
   if (printConfig.printMode === "escpos") {
@@ -677,9 +777,8 @@ async function printTestSlip() {
     const filePath = app.isPackaged ? path.join(process.resourcesPath, filename) : path.join(__dirname, filename);
     fs.writeFileSync(filePath, convertBillToEscPos(SAMPLE_ORDER));
     const exePath = app.isPackaged ? path.join(process.resourcesPath, "print-raw.exe") : path.join(__dirname, "print-raw.exe");
-    return await new Promise((resolve, reject) => {
-      execFile(exePath, [filePath], (err, stdout) => (err ? reject(err) : resolve(stdout)));
-    });
+    await sendToPrinters(exePath, filePath, testTargets, `test-${which}`);
+    return describeTargets(testTargets);
   }
 
   const win = new BrowserWindow({
@@ -713,12 +812,84 @@ async function printTestSlip() {
     const filePath = app.isPackaged ? path.join(process.resourcesPath, filename) : path.join(__dirname, filename);
     fs.writeFileSync(filePath, escPosBuffer);
     const exePath = app.isPackaged ? path.join(process.resourcesPath, "print-raw.exe") : path.join(__dirname, "print-raw.exe");
-    return await new Promise((resolve, reject) => {
-      execFile(exePath, [filePath], (err, stdout) => (err ? reject(err) : resolve(stdout)));
-    });
+    await sendToPrinters(exePath, filePath, testTargets, `test-${which}`);
+    return describeTargets(testTargets);
   } finally {
     if (win && !win.isDestroyed()) win.close();
   }
+}
+
+// Which printers a document goes to. An empty selection yields [null], i.e. one
+// job with no printer argument — print-raw.exe then uses the Windows default,
+// preserving the original behaviour for anyone who never touches the setting.
+function printersFor(isBill) {
+  const list = (isBill ? printConfig.billPrinters : printConfig.kotPrinters) || [];
+  return list.length
+    ? list.map((t) => ({ name: t.name, copies: t.copies || 1 }))
+    : [{ name: null, copies: 1 }]; // nothing chosen = one copy, system default
+}
+
+// Send one already-built payload to each target, sequentially — two jobs racing
+// into the same spooler is how you get interleaved receipts.
+// Gap between two copies of the SAME document on the SAME printer. Back-to-back
+// byte-identical RAW jobs can be coalesced (or one silently dropped) by some
+// drivers; a short beat makes each land as its own ticket.
+const COPY_GAP_MS = 400;
+
+// "Kitchen-POS x2, Counter-POS" — copies only shown when there is more than one.
+function describeTargets(targets) {
+  return targets
+    .map((t) => `${t.name || "system default"}${(t.copies || 1) > 1 ? ` x${t.copies}` : ""}`)
+    .join(", ");
+}
+
+// Every raw print job in the app funnels through this one chain. Within a job the
+// copies are already sequential, but the KOT and the bill are INDEPENDENT flows
+// (separate hidden windows) that finish whenever they finish — so without a
+// global queue the bill printed in between the two KOT copies, and the kitchen
+// got ticket, receipt, ticket. Serialising app-wide keeps each document's copies
+// contiguous and documents in order.
+let printJobQueue = Promise.resolve();
+
+function sendToPrinters(exePath, filePath, targets, label) {
+  const run = () => sendToPrintersNow(exePath, filePath, targets, label);
+  // Both handlers: one failed job must never break the chain for the next.
+  printJobQueue = printJobQueue.then(run, run);
+  return printJobQueue;
+}
+
+function sendToPrintersNow(exePath, filePath, targets, label) {
+  // Flatten {name, copies} into one entry per physical ticket, then run the whole
+  // lot strictly sequentially — parallel jobs into a single spooler interleave.
+  const jobs = [];
+  targets.forEach((t) => {
+    const copies = Math.max(1, t.copies || 1);
+    for (let i = 1; i <= copies; i++) jobs.push({ name: t.name, copy: i, of: copies });
+  });
+
+  return jobs.reduce(
+    (chain, job, index) =>
+      chain.then(
+        () =>
+          new Promise((resolve) => {
+            const where = job.name || "default";
+            const which = job.of > 1 ? ` copy ${job.copy}/${job.of}` : "";
+            const args = job.name ? [filePath, job.name] : [filePath];
+            execFile(exePath, args, (err, stdout) => {
+              if (err) {
+                // One bad printer must never cost the other tickets.
+                log.error(`Raw printing error (${label} -> ${where}${which}):`, err);
+              } else {
+                log.info(`Raw printing output (${label} -> ${where}${which}):`, stdout);
+              }
+              // Only pause between copies; no need to slow down the last job.
+              if (index < jobs.length - 1) setTimeout(resolve, COPY_GAP_MS);
+              else resolve();
+            });
+          })
+      ),
+    Promise.resolve()
+  );
 }
 
 const rasterDelay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1069,19 +1240,19 @@ function createWindow() {
                   
                   log.info(`Executing raw printer utility: ${exePath}`);
                   
-                  execFile(exePath, [filePath], (err, stdout, stderr) => {
-                      if (err) {
-                        log.error("Raw printing error:", err);
-                        return;
-                      }
-                      
-                      log.info("Raw printing output:", stdout, `[timing] TOTAL job=${since()}`);
-                      
+                  const label = isBill ? "bill" : "KOT";
+                  const targets = printersFor(isBill);
+                  log.info(`Printing ${label} to: ${describeTargets(targets)}`);
+
+                  sendToPrinters(exePath, filePath, targets, label).then(() => {
+                      log.info(`${label} print finished`, `[timing] TOTAL job=${since()}`);
+
+                      const where = describeTargets(targets);
                       mainWindow.webContents.send("print-status", {
                         success: true,
-                        message: "Print sent successfully! 🖨️"
+                        message: `${isBill ? "Bill" : "KOT"} sent to ${where} 🖨️`,
                       });
-                      
+
                       setTimeout(() => {
                            if (!backgroundWindow.isDestroyed()) backgroundWindow.close();
                       }, 1000);
@@ -1393,10 +1564,66 @@ function createTray() {
 
 // --- Printer settings IPC (from settings.html via settings-preload.js) ---
 ipcMain.handle("print-config:get", () => printConfig);
-ipcMain.handle("print-config:save", (_e, cfg) => savePrintConfig(cfg));
-ipcMain.handle("print-config:test", async () => {
+// Ask the Windows spooler directly. Chromium's print backend is the primary
+// source, but it has been seen returning a short list (notably when queried
+// before the backend has finished initialising), and a partner who cannot see
+// their kitchen printer has no way to work around it. This is the second
+// opinion; the two are merged.
+function spoolerPrinterNames() {
+  return new Promise((resolve) => {
+    if (process.platform !== "win32") return resolve([]);
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", "Get-Printer | Select-Object -ExpandProperty Name"],
+      { timeout: 8000, windowsHide: true },
+      (err, stdout) => {
+        if (err) {
+          log.warn("Spooler printer enumeration failed:", err.message);
+          return resolve([]);
+        }
+        // split on newlines without a regex literal - trim() handles any CR
+        const rows = String(stdout || "").split(String.fromCharCode(10));
+        resolve(rows.map((n) => n.trim()).filter(Boolean));
+      }
+    );
+  });
+}
+
+// The settings window needs the machine's printer list to choose from.
+ipcMain.handle("print-config:printers", async () => {
+  const out = [];
+  const seen = new Set();
+  const add = (name, displayName, isDefault, source) => {
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    out.push({ name, displayName: displayName || name, isDefault: !!isDefault, source });
+  };
+
+  let error = null;
   try {
-    const out = await printTestSlip();
+    const wc = (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) || null;
+    const list = wc ? await wc.getPrintersAsync() : [];
+    list.forEach((p) => add(p.name, p.displayName, p.isDefault, "chromium"));
+  } catch (e) {
+    error = e.message;
+    log.warn("Could not list printers via Chromium:", e.message);
+  }
+
+  // Anything the spooler knows about that Chromium did not report.
+  const fromSpooler = await spoolerPrinterNames();
+  const before = out.length;
+  fromSpooler.forEach((name) => add(name, name, false, "spooler"));
+  if (out.length > before) {
+    log.info(`Printer list: Chromium reported ${before}, spooler added ${out.length - before} more`);
+  }
+
+  log.info(`Printer list: ${out.length} printer(s) -> ${out.map((p) => p.name).join(", ") || "(none)"}`);
+  return { printers: out, error };
+});
+ipcMain.handle("print-config:save", (_e, cfg) => savePrintConfig(cfg));
+ipcMain.handle("print-config:test", async (_e, which) => {
+  try {
+    const out = await printTestSlip(which === "kot" ? "kot" : "bill");
     return { ok: true, message: String(out || "").trim() };
   } catch (err) {
     return { ok: false, error: err.message };
