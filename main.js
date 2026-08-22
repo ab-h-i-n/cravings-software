@@ -152,6 +152,27 @@ function to12Hour(value) {
   return hour + ":" + m[2] + " " + period;
 }
 
+// When this receipt was printed — stamped on both the bill and the KOT.
+//
+// Distinct from the order's own Date/Time at the top: this says when the paper
+// came out, which is what tells a reprint apart from the original.
+//
+// Formatted by hand rather than with toLocaleString(), which follows whatever
+// locale the till happens to run under — a 24-hour Windows install was printing
+// "16:02:50" while everything else on the receipt was 12-hour.
+function generatedStamp(value) {
+  const raw = String(value == null ? "" : value).trim();
+  if (raw) return raw;
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  let hour = d.getHours();
+  const period = hour >= 12 ? "PM" : "AM";
+  hour = hour % 12;
+  if (hour === 0) hour = 12;
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}` +
+    `, ${hour}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${period}`;
+}
+
 // Break text at spaces instead of letting the printer chop it mid-word.
 function escposWrap(str, width) {
   const words = String(str == null ? "" : str).split(/\s+/).filter(Boolean);
@@ -287,7 +308,7 @@ function convertOrderToEscPos(order) {
   buffer += ALIGN_CENTER;
   // Wrap at spaces: a full date+time runs past 32 columns on a 58mm roll and the
   // printer would otherwise break it mid-word.
-  escposWrap(`Generated at: ${order.generated_at || new Date().toLocaleString()}`, WIDTH)
+  escposWrap(`Generated at: ${generatedStamp(order.generated_at)}`, WIDTH)
     .forEach((ln) => { buffer += textLine(ln); });
   
   if (order.display_id && Number(order.display_id) > 0) {
@@ -479,6 +500,11 @@ function convertBillToEscPos(bill) {
   
   // 7. Footer
   buffer += textLine("Thank you for your visit!");
+
+  // Same stamp the KOT carries, wrapped because a full date+time runs past 32
+  // columns on a 58mm roll.
+  escposWrap(`Generated at: ${generatedStamp(bill.generated_at)}`, WIDTH)
+    .forEach((ln) => { buffer += textLine(ln); });
   
   // Tax No
   const taxLabelFooter = (bill.country === "United Arab Emirates") ? "VAT" : "GST";
