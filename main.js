@@ -378,10 +378,10 @@ function convertBillToEscPos(bill) {
   // The Order line carries the short order ID — see the KOT note above.
   const billShortId = String(bill.id || "").slice(0, 8);
   const billOrderNo = bill.display_id || "";
+  // Only the short id identifies the order now — the sequential order number was
+  // dropped from the bill (as it was from the KOT). It still stands in as the
+  // Order value on the odd payload that carries no id at all.
   buffer += pair(`Order: ${billShortId ? "#" + billShortId : billOrderNo}`, "");
-  // The bill keeps the order number and the date; only the KOT was trimmed down
-  // to the id + type + time the kitchen actually needs.
-  if (billOrderNo && billShortId) buffer += pair(`No.  : ${billOrderNo}`, "");
   buffer += pair(`Date : ${bill.created_at}`, `Time: ${to12Hour(bill.time)}`);
 
   buffer += pair(`Type : ${bill.type}`, "");
