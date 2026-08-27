@@ -376,7 +376,13 @@ function convertBillToEscPos(bill) {
   buffer += textLine(bill.store_name || "Restaurant");
   buffer += BOLD_OFF;
   if (bill.address) {
-      buffer += textLine(bill.address);
+      // Wrap at spaces. This was a plain textLine, so a long store address went
+      // out as one line and the PRINTER broke it at the column edge, mid-word —
+      // Mehroo Kitchen's 177 characters landed as four mangled lines. The
+      // customer's address further down has always wrapped this way; the store's
+      // own did not.
+      escposWrap(replaceSpecialChars(bill.address), WIDTH)
+          .forEach((ln) => { buffer += textLine(ln); });
   }
   if (bill.phone) buffer += textLine(`Tel: ${bill.phone}`);
   
