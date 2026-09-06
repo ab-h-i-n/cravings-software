@@ -1160,7 +1160,7 @@
       { id: "qrpay", type: "qr", source: "upi", size: "s", caption: "Scan to Pay", captionBelow: "{currency} {grand_total}" },
       { id: "qrbill", type: "qr", source: "bill_detail", size: "m", caption: "Scan for bill details" },
       { id: "sp", type: "space", lines: 1 },
-      { id: "pow", type: "text", text: "Powered By Cravings", style: { align: "center" } },
+      { id: "pow", type: "text", text: "Powered By Menuthere", style: { align: "center" } },
     ],
   };
 

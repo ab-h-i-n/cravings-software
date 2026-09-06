@@ -317,7 +317,7 @@ function convertOrderToEscPos(order) {
   }
   
   buffer += LF;
-  buffer += textLine("Powered By Cravings");
+  buffer += textLine("Powered By Menuthere");
   
   // 6. Cut
   buffer += LF + LF + LF; // Feed
@@ -583,7 +583,7 @@ function convertBillToEscPos(bill) {
 
   buffer += LF;
   if(bill.show_powered_by_cravings) {
-    buffer += textLine("Powered By Cravings");
+    buffer += textLine("Powered By Menuthere");
   }
   
   // 8. Cut
