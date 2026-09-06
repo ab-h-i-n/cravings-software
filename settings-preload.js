@@ -8,4 +8,13 @@ contextBridge.exposeInMainWorld("printSettings", {
   test: (which) => ipcRenderer.invoke("print-config:test", which),
   printers: () => ipcRenderer.invoke("print-config:printers"),
   close: () => ipcRenderer.send("settings:close"),
+  // Bill layout card: status, the per-PC "use the built-in layout" switch, a
+  // sync with the account, an ESC/POS test of the active layout, and the
+  // Bill Layout window.
+  layoutStatus: () => ipcRenderer.invoke("bill-template:status"),
+  layoutUseDefault: (on) => ipcRenderer.invoke("bill-template:use-default", on),
+  layoutSync: () => ipcRenderer.invoke("bill-template:sync"),
+  layoutTest: () => ipcRenderer.invoke("bill-template:test", { which: "sample" }),
+  openDesigner: () => ipcRenderer.send("designer:open"),
+  onLayoutStatus: (cb) => ipcRenderer.on("bill-template:status", (_e, status) => cb(status)),
 });

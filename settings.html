@@ -52,12 +52,16 @@
     .status { min-height:18px; text-align:center; font-size:12px; color:var(--muted); margin-top:10px; }
     .status.ok { color:#1f9d55; } .status.err { color:#d33; }
     .foot { color:var(--muted); font-size:11px; text-align:center; margin-top:4px; }
+    .lstat { display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:12.5px; margin:2px 0 4px; }
+    .lstat b { font-weight:600; }
+    .lsync { font-size:11px; color:var(--muted); text-align:right; flex-shrink:0; max-width:55%; }
+    .lsync.ok { color:#1f9d55; } .lsync.warn { color:#c27a12; } .lsync.err { color:#d33; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Printer Settings</h1>
-    <p class="sub">Paper size &amp; text scale for this printer. Bill layout and Full Arabic are now set in the web dashboard (Settings &rarr; Store &rarr; Bill Printing).</p>
+    <p class="sub">Paper size, text scale and the ESC/POS bill layout for this printer. Tax&nbsp;Invoice / UAE layouts and Full Arabic are set in the web dashboard (Settings &rarr; Store &rarr; Bill Printing).</p>
 
     <div class="card">
       <span class="lbl">Printer type</span>
@@ -71,9 +75,23 @@
       <span class="lbl">Print mode</span>
       <div class="types" id="modes">
         <label class="type" data-mode="raster"><input type="radio" name="pmode" value="raster"><div class="t">Raster</div><div class="d">image · all layouts</div></label>
-        <label class="type" data-mode="escpos"><input type="radio" name="pmode" value="escpos"><div class="t">ESC/POS</div><div class="d">text · default only</div></label>
+        <label class="type" data-mode="escpos"><input type="radio" name="pmode" value="escpos"><div class="t">ESC/POS</div><div class="d">text · custom layout</div></label>
       </div>
       <div class="hint" id="modeHint"></div>
+    </div>
+
+    <div class="card" id="layoutCard">
+      <div class="phead">
+        <span class="lbl" style="margin:0">Bill layout (ESC/POS)</span>
+        <span>
+          <button class="mini" id="layoutSyncBtn" title="Fetch the layout saved to your account">Sync</button>
+          <button class="mini" id="layoutTestBtn" title="Print a sample bill with the active layout (ESC/POS)">Test</button>
+        </span>
+      </div>
+      <div class="lstat"><span id="layoutName"><b>Built-in layout</b></span><span id="layoutSync" class="lsync"></span></div>
+      <div class="btns" style="margin-top:8px"><button id="customizeBtn" class="primary">Customize…</button></div>
+      <label class="chk" style="margin-top:10px"><input type="checkbox" id="useDefaultChk"><span>Print the built-in layout on this PC<div class="h">Keeps your saved layout; this PC just doesn't use it.</div></span></label>
+      <div class="hint">Every line of the bill is editable. The layout is saved to your Menuthere account, so it follows you to any PC and the Menuthere team can adjust it for you. Applies to ESC/POS prints.</div>
     </div>
 
     <div class="card">
@@ -220,8 +238,10 @@
       const radio = document.querySelector(`input[name=pmode][value="${mode}"]`);
       if (radio) radio.checked = true;
       $("modeHint").innerHTML = mode === "escpos"
-        ? "Raw text in the printer's built-in font — fast, but <b>default layout only</b>: Tax&nbsp;Invoice / UAE layouts, Arabic text and logos cannot be printed this way."
-        : "Prints the receipt as an image, exactly as it looks on screen. Needed for Arabic, logos and the Tax&nbsp;Invoice / UAE layouts.";
+        ? "Raw text in the printer's built-in font — fast. Prints your <b>custom bill layout</b> when one is saved (card below). Tax&nbsp;Invoice / UAE layouts and Arabic text cannot be printed this way."
+        : "Prints the receipt as an image, exactly as it looks on screen. Needed for Arabic and the Tax&nbsp;Invoice / UAE layouts. Bill layout customisation applies to ESC/POS mode only.";
+      // The layout only applies to ESC/POS prints, so its card only shows there.
+      $("layoutCard").hidden = mode !== "escpos";
     }
     function fillForm(type) {
       const p = cfg.profiles[type] || { rasterWidth: type === "58mm" ? 384 : 576, scale: 1.6 };
@@ -295,6 +315,48 @@
     });
     $("closeBtn").addEventListener("click", () => window.printSettings.close());
 
+    // --- Bill layout card ---
+    const fmtTime = (iso) => {
+      const d = new Date(iso);
+      if (isNaN(d)) return "";
+      return d.toLocaleString([], { day: "2-digit", month: "short", hour: "numeric", minute: "2-digit" });
+    };
+    function renderLayoutStatus(s) {
+      if (!s) return;
+      const name = $("layoutName"), sync = $("layoutSync");
+      if (!s.hasTemplate) name.innerHTML = "<b>Built-in layout</b> (today's bill)";
+      else if (s.useDefault) name.innerHTML = "<b>Built-in layout</b> · custom layout saved (" + s.blocks + " blocks) but not used here";
+      else name.innerHTML = "<b>Custom layout</b> · " + s.blocks + " blocks";
+      const st = s.sync || {};
+      let text = "", cls = "";
+      if (st.state === "syncing") text = "Syncing…";
+      else if (s.pending) { text = "Saved" + (s.updatedAt ? " · " + fmtTime(s.updatedAt) : ""); cls = "ok"; }
+      else if (s.hasTemplate && (st.state === "synced" || s.syncedAt)) { text = "Synced to your account" + (s.syncedAt ? " · " + fmtTime(s.syncedAt) : ""); cls = "ok"; }
+      sync.textContent = text;
+      sync.className = "lsync" + (cls ? " " + cls : "");
+      $("useDefaultChk").checked = !!s.useDefault;
+    }
+    $("customizeBtn").addEventListener("click", () => window.printSettings.openDesigner());
+    $("useDefaultChk").addEventListener("change", async (e) => {
+      renderLayoutStatus(await window.printSettings.layoutUseDefault(e.target.checked));
+    });
+    $("layoutSyncBtn").addEventListener("click", async (e) => {
+      e.preventDefault();
+      setStatus("Syncing layout with your account…");
+      const s = await window.printSettings.layoutSync();
+      renderLayoutStatus(s);
+      const ok = s && s.sync && s.sync.state === "synced";
+      setStatus(ok ? "Synced with your account" : "Could not reach your account right now", ok ? "ok" : "err");
+    });
+    $("layoutTestBtn").addEventListener("click", async (e) => {
+      e.preventDefault();
+      setStatus("Printing layout test…");
+      cfg = await window.printSettings.save(buildCfg()); // printers + paper first
+      const res = await window.printSettings.layoutTest();
+      setStatus(res.ok ? `Test sent to ${res.message || "printer"} 🖨️` : ("Test failed: " + (res.error || "")), res.ok ? "ok" : "err");
+    });
+    window.printSettings.onLayoutStatus(renderLayoutStatus);
+
     (async function init() {
       cfg = await window.printSettings.get();
       if (!cfg || !cfg.profiles) cfg = { activeType: "80mm", profiles: { "58mm": { rasterWidth: 384, scale: 1.6 }, "80mm": { rasterWidth: 576, scale: 1.6 } } };
@@ -303,6 +365,7 @@
       fillForm(currentType);
       currentMode = cfg.printMode === "escpos" ? "escpos" : "raster";
       selectModeUI(currentMode);
+      renderLayoutStatus(await window.printSettings.layoutStatus());
       await loadPrinters();
     })();
   </script>

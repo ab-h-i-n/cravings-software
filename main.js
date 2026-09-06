@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, Tray, nativeImage } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Menu, Tray, nativeImage, net } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { autoUpdater } = require("electron-updater");
@@ -7,6 +7,7 @@ const { arabicLabelScript } = require("./arabicLabels");
 const { buildInvoiceHtml } = require("./billInvoice");
 const { buildUaeInvoiceHtml } = require("./billInvoiceUae");
 const { deliveryBoyScript } = require("./deliveryBoyBlock");
+const BillTemplate = require("./billTemplate");
 
 // 1. Import electron-log
 const log = require("electron-log");
@@ -643,6 +644,26 @@ const DEFAULT_PRINT_CONFIG = {
   //                        but DEFAULT layout only: no custom layouts, no Arabic,
   //                        no logos (the printer simply cannot render them).
   printMode: "raster",
+  // Custom ESC/POS bill layout (Printer Settings -> Bill layout -> Customize...).
+  // The layout lives in the partner's account (partners.bill_template) and
+  // travels inside every /bill payload; this is the local copy, so a test print
+  // works offline and a PC that has not synced yet still prints the last layout
+  // it saved. null = never customised -> convertBillToEscPos exactly as before.
+  billTemplate: null,
+  // Per-PC switch: keep the saved layout but print the built-in bill here.
+  billTemplateUseDefault: false,
+  // Sync bookkeeping: when the local copy last matched the account, whether a
+  // local save is still waiting to be pushed, and when it was last changed.
+  billTemplateSyncedAt: null,
+  billTemplatePending: false,
+  billTemplateUpdatedAt: null,
+  // The dashboard's bill-logo URL, cached from the account so the designer can
+  // preview a "store logo" block without a live order.
+  billLogoUrl: null,
+  // The partner's own store details (name, address, tax numbers, currency,
+  // UPI…) so the preview and test print show THEIR bill, not a sample store.
+  // Filled from the account sync, or remembered from any bill this PC prints.
+  billStore: null,
   profiles: {
     "58mm": { rasterWidth: 384, scale: 1.6 },
     "80mm": { rasterWidth: 576, scale: 1.6 },
@@ -716,13 +737,25 @@ function loadPrintConfig() {
       if (kp) cfg.kotPrinters = kp;
       if (parsed.printMode === "raster" || parsed.printMode === "escpos") cfg.printMode = parsed.printMode;
       if (isValidBillLayout(parsed.billLayout)) cfg.billLayout = parsed.billLayout;
+      const tpl = BillTemplate.normalizeTemplate(parsed.billTemplate);
+      if (tpl) cfg.billTemplate = tpl;
+      if (typeof parsed.billTemplateUseDefault === "boolean") cfg.billTemplateUseDefault = parsed.billTemplateUseDefault;
+      if (typeof parsed.billTemplateSyncedAt === "string") cfg.billTemplateSyncedAt = parsed.billTemplateSyncedAt;
+      if (typeof parsed.billTemplatePending === "boolean") cfg.billTemplatePending = parsed.billTemplatePending;
+      if (typeof parsed.billTemplateUpdatedAt === "string") cfg.billTemplateUpdatedAt = parsed.billTemplateUpdatedAt;
+      if (typeof parsed.billLogoUrl === "string" && parsed.billLogoUrl.trim()) cfg.billLogoUrl = parsed.billLogoUrl.trim();
+      const store = cleanStore(parsed.billStore);
+      if (store) cfg.billStore = store;
     } else {
       // legacy formats: { paperWidthMM: 58 } or { rasterWidth: N }
       if (parsed.paperWidthMM === 58) cfg.activeType = "58mm";
       else if (parsed.paperWidthMM === 80) cfg.activeType = "80mm";
       if (Number(parsed.rasterWidth) > 0) cfg.profiles[cfg.activeType].rasterWidth = clampWidth(parsed.rasterWidth);
     }
-    log.info(`Print config loaded: ${JSON.stringify(cfg)}`);
+    // The layout can be several KB (an embedded logo); log its size, not its body.
+    log.info(`Print config loaded: ${JSON.stringify(Object.assign({}, cfg, {
+      billTemplate: cfg.billTemplate ? `[${cfg.billTemplate.blocks.length} blocks]` : null,
+    }))}`);
   } catch (e) {
     // Say WHY: this used to be silent, so a corrupt file looked like the
     // calibration had reset itself for no reason.
@@ -751,6 +784,22 @@ function savePrintConfig(incoming) {
     ? incoming.muteOrderSound : printConfig.muteOrderSound;
   clean.printMode = (incoming && (incoming.printMode === "raster" || incoming.printMode === "escpos"))
     ? incoming.printMode : printConfig.printMode;
+  // Bill layout keys: a key present in `incoming` wins (null clears it),
+  // otherwise keep what we have — the settings window sends a partial config.
+  const has = (k) => !!incoming && Object.prototype.hasOwnProperty.call(incoming, k);
+  const isoOrNull = (v) => (typeof v === "string" && v ? v : null);
+  clean.billTemplate = has("billTemplate")
+    ? (BillTemplate.normalizeTemplate(incoming.billTemplate) || null) : printConfig.billTemplate;
+  clean.billTemplateUseDefault = (incoming && typeof incoming.billTemplateUseDefault === "boolean")
+    ? incoming.billTemplateUseDefault : !!printConfig.billTemplateUseDefault;
+  clean.billTemplateSyncedAt = has("billTemplateSyncedAt") ? isoOrNull(incoming.billTemplateSyncedAt) : printConfig.billTemplateSyncedAt;
+  clean.billTemplatePending = (incoming && typeof incoming.billTemplatePending === "boolean")
+    ? incoming.billTemplatePending : !!printConfig.billTemplatePending;
+  clean.billTemplateUpdatedAt = has("billTemplateUpdatedAt") ? isoOrNull(incoming.billTemplateUpdatedAt) : printConfig.billTemplateUpdatedAt;
+  clean.billLogoUrl = has("billLogoUrl")
+    ? (typeof incoming.billLogoUrl === "string" && incoming.billLogoUrl.trim() ? incoming.billLogoUrl.trim() : null)
+    : printConfig.billLogoUrl;
+  clean.billStore = has("billStore") ? cleanStore(incoming.billStore) : printConfig.billStore;
   const cleanPrinters = (v, fallback) => {
     if (!Array.isArray(v)) return fallback;
     const out = [];
@@ -798,16 +847,22 @@ const SAMPLE_ORDER = {
 // Width + Scale + Layout, so tuning is reflected on paper exactly like a live bill.
 // `which` picks the target: "bill" or "kot", so each configured printer can be
 // verified on its own rather than guessing which device a test slip came out of.
-async function printTestSlip(which = "bill") {
+// `opts` (from the Bill Layout window): { escpos: true } forces the text path,
+// `template` prints a draft layout, `order` replaces the sample bill.
+async function printTestSlip(which = "bill", opts = {}) {
   const isBill = which !== "kot";
   const testTargets = printersFor(isBill);
   // ESC/POS mode: test the mode that will actually be used — raw text in the
-  // printer's own font, default layout. No page render is involved at all.
-  if (printConfig.printMode === "escpos") {
-    log.info("Test print: ESC/POS text mode");
+  // printer's own font, through the custom bill layout when one is active.
+  if (printConfig.printMode === "escpos" || opts.escpos) {
+    log.info(`Test print: ESC/POS text mode${opts.template ? " (draft layout)" : ""}`);
     const filename = "temp_printer_test.bin";
     const filePath = app.isPackaged ? path.join(process.resourcesPath, filename) : path.join(__dirname, filename);
-    fs.writeFileSync(filePath, convertBillToEscPos(SAMPLE_ORDER));
+    const order = opts.order || SAMPLE_ORDER;
+    const bytes = opts.template
+      ? await buildTemplateEscPos(opts.template, order)
+      : await buildEscPosBill(order);
+    fs.writeFileSync(filePath, bytes);
     const exePath = app.isPackaged ? path.join(process.resourcesPath, "print-raw.exe") : path.join(__dirname, "print-raw.exe");
     await sendToPrinters(exePath, filePath, testTargets, `test-${which}`);
     return describeTargets(testTargets);
@@ -958,10 +1013,15 @@ function receiptHasUnprintable(order, isBill) {
   return /[^\x00-\x7F]/.test(text);
 }
 
-// BGRA bitmap -> ESC/POS GS v 0 raster (split into horizontal bands).
-function bitmapToRaster(bgra, w, h) {
+// BGRA bitmap -> the GS v 0 bands only (no init, feed or cut), so a picture can
+// also sit between the text lines of a custom bill layout. Transparent pixels
+// count as white: Chromium hands back premultiplied BGRA, where a fully
+// transparent pixel is (0,0,0,0) — black if alpha were ignored, which would
+// print a transparent logo as a solid box. Page captures are opaque, so their
+// output is unchanged.
+function rasterBands(bgra, w, h) {
   const bytesPerRow = Math.ceil(w / 8);
-  const chunks = [Buffer.from([0x1b, 0x40])]; // ESC @ init
+  const chunks = [];
   for (let y0 = 0; y0 < h; y0 += RASTER_BAND_ROWS) {
     const bandH = Math.min(RASTER_BAND_ROWS, h - y0);
     const header = Buffer.from([
@@ -978,7 +1038,7 @@ function bitmapToRaster(bgra, w, h) {
           const x = bx * 8 + bit;
           if (x < w) {
             const idx = (srcRow + x) * 4; // BGRA
-            const lum = 0.114 * bgra[idx] + 0.587 * bgra[idx + 1] + 0.299 * bgra[idx + 2];
+            const lum = 0.114 * bgra[idx] + 0.587 * bgra[idx + 1] + 0.299 * bgra[idx + 2] + (255 - bgra[idx + 3]);
             if (lum < RASTER_THRESHOLD) b |= 0x80 >> bit;
           }
         }
@@ -987,8 +1047,16 @@ function bitmapToRaster(bgra, w, h) {
     }
     chunks.push(header, data);
   }
-  chunks.push(Buffer.from([0x0a, 0x0a, 0x0a, 0x0a, 0x1d, 0x56, 0x42, 0x00])); // feed + cut
   return Buffer.concat(chunks);
+}
+
+// BGRA bitmap -> a complete ESC/POS raster job (init, bands, feed + cut).
+function bitmapToRaster(bgra, w, h) {
+  return Buffer.concat([
+    Buffer.from([0x1b, 0x40]), // ESC @ init
+    rasterBands(bgra, w, h),
+    Buffer.from([0x0a, 0x0a, 0x0a, 0x0a, 0x1d, 0x56, 0x42, 0x00]), // feed + cut
+  ]);
 }
 
 // Render the receipt page (already loaded in the hidden window) to a raster buffer.
@@ -1093,6 +1161,389 @@ async function captureReceiptRaster(win, injectArabic = false, deliveryBoy = nul
 
 
 // --- MAIN APPLICATION WINDOW ---
+// --- CUSTOM BILL LAYOUT (ESC/POS) ---
+// The layout is designed in the Bill Layout window (designer.html), kept in the
+// partner's account (partners.bill_template) and cached in print-config.json.
+// In ESC/POS mode the bill is built from it instead of convertBillToEscPos;
+// with no layout the old builder runs untouched. billTemplate.js is the engine
+// and check-template-default.js proves its default prints today's bill.
+
+// The dashboard window starts at cravings.live and is redirected to
+// menuthere.com, and the session cookie belongs to whichever host it ends up
+// on — so the sync talks to the window's own origin, not a fixed one.
+const API_BASE_FALLBACK = "https://menuthere.com";
+const BILL_TEMPLATE_API = "/api/print/bill-template";
+function apiBase() {
+  try {
+    const u = new URL(mainWindow.webContents.getURL());
+    if (u.protocol === "https:" && /(^|\.)(cravings\.live|menuthere\.com)$/i.test(u.hostname)) return u.origin;
+  } catch (e) { /* window not ready */ }
+  return API_BASE_FALLBACK;
+}
+
+// The last bill this PC printed, kept in memory only, so a test print can use a
+// real order instead of the sample.
+let lastBillPayload = null;
+let settingsWindow = null;
+let designerWindow = null;
+
+// The store block of a bill: what the account sync returns, and what a printed
+// bill carries. Only plain strings/booleans, nothing else is kept.
+const STORE_STRING_KEYS = ["store_name", "address", "phone", "gst_no", "fssai_licence_no", "trn", "currency", "country", "upi_id", "logo_url"];
+function cleanStore(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const out = {};
+  for (const k of STORE_STRING_KEYS) {
+    const v = raw[k];
+    if (typeof v === "string" && v.trim()) out[k] = v.trim().slice(0, 500);
+  }
+  if (!out.store_name) return null;
+  out.show_payment_qr = !!raw.show_payment_qr;
+  out.bill_show_detail_qr = !!raw.bill_show_detail_qr;
+  return out;
+}
+
+// A printed bill knows everything about the store; keep that, so the preview
+// shows the partner's own bill from the first print on, even offline.
+function rememberStoreFromBill(bill) {
+  if (!bill || !bill.store_name) return;
+  const store = cleanStore({
+    store_name: bill.store_name,
+    address: bill.address,
+    phone: bill.phone,
+    gst_no: bill.gst_no,
+    fssai_licence_no: bill.fssai_licence_no,
+    trn: bill.trn,
+    currency: bill.currency,
+    country: bill.country,
+    upi_id: (String(bill.payment_upi_string || "").match(/[?&]pa=([^&]+)/) || [])[1] || "",
+    logo_url: bill.store_logo_url || bill.bill_logo_url || "",
+    show_payment_qr: !!bill.payment_upi_string,
+    bill_show_detail_qr: !!bill.bill_detail_url,
+  });
+  if (!store) return;
+  if (JSON.stringify(store) === JSON.stringify(printConfig.billStore)) return;
+  savePrintConfig({ ...printConfig, billStore: store });
+}
+
+// The sample order the designer previews and test-prints: sample lines, the
+// partner's own store. Falls back to the built-in sample store until this PC
+// has synced with the account or printed a bill (then it says so).
+function sampleBill() {
+  const b = Object.assign({}, BillTemplate.SAMPLE_BILL, { generated_at: "" });
+  const st = printConfig.billStore;
+  if (!st) {
+    b.store_logo_url = printConfig.billLogoUrl || null;
+    b.bill_logo_url = printConfig.billLogoUrl || null;
+    b.sample_store = true;
+    return b;
+  }
+  b.store_name = st.store_name;
+  b.address = st.address || "";
+  b.phone = st.phone || "";
+  b.gst_no = st.gst_no || null;
+  b.fssai_licence_no = st.fssai_licence_no || null;
+  b.trn = st.trn || null;
+  b.currency = st.currency || b.currency;
+  b.country = st.country || b.country;
+  b.payment_upi_string = st.show_payment_qr && st.upi_id
+    ? `upi://pay?pa=${st.upi_id}&pn=${encodeURIComponent(st.store_name)}&am=598.50&cu=INR`
+    : null;
+  b.bill_detail_url = st.bill_show_detail_qr ? b.bill_detail_url : null;
+  b.store_logo_url = st.logo_url || printConfig.billLogoUrl || null;
+  b.bill_logo_url = b.store_logo_url;
+  b.sample_store = false;
+  return b;
+}
+
+// Which layout a bill prints with: the account's copy travelling in the payload
+// (freshest), else this PC's copy, else none — which means the built-in bill.
+function activeBillTemplate(bill) {
+  if (printConfig.billTemplateUseDefault) return null;
+  const fromPayload = bill && bill.bill_template ? BillTemplate.normalizeTemplate(bill.bill_template) : null;
+  return fromPayload || printConfig.billTemplate || null;
+}
+
+async function buildEscPosBill(bill) {
+  const tpl = activeBillTemplate(bill);
+  if (!tpl) return convertBillToEscPos(bill);
+  try {
+    return await buildTemplateEscPos(tpl, bill);
+  } catch (e) {
+    // A broken layout must never cost a partner a bill.
+    log.error("Custom bill layout failed; printing the built-in layout instead", e);
+    return convertBillToEscPos(bill);
+  }
+}
+
+async function buildTemplateEscPos(tpl, bill) {
+  const cols = escposCharsPerLine();
+  const lines = BillTemplate.resolveBill(tpl, bill, { paper: printConfig.activeType });
+  await resolveImageLines(lines);
+  const phys = BillTemplate.fitLines(lines, cols);
+  return Buffer.from(BillTemplate.physToEscPos(phys, { paper: printConfig.activeType }), "latin1");
+}
+
+// A payload that carries the account's layout keeps this PC's copy current even
+// when the API is unreachable — but never over a local save still waiting to be
+// pushed, which is the newer of the two.
+function adoptPayloadTemplate(raw) {
+  if (raw === undefined || raw === null || printConfig.billTemplatePending) return;
+  const tpl = BillTemplate.normalizeTemplate(raw);
+  if (!tpl) return;
+  if (JSON.stringify(tpl) === JSON.stringify(printConfig.billTemplate)) return;
+  log.info("Bill layout updated from the print payload");
+  savePrintConfig({ ...printConfig, billTemplate: tpl, billTemplatePending: false, billTemplateSyncedAt: new Date().toISOString() });
+  broadcastTemplateStatus();
+}
+
+// --- images on the ESC/POS path ---
+// A logo used to force the whole bill onto the raster path. With a layout the
+// picture is fetched once, scaled to its share of the printhead, thresholded to
+// one bit and sent inline as GS v 0 between the text lines.
+const imageCache = new Map(); // url -> { img, at }
+const IMAGE_CACHE_MS = 10 * 60 * 1000;
+
+function fetchBytes(url, timeoutMs = 6000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const req = net.request({ url, method: "GET" });
+      const timer = setTimeout(() => { try { req.abort(); } catch (e) { /* gone */ } finish(null); }, timeoutMs);
+      req.on("response", (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => { clearTimeout(timer); finish(res.statusCode >= 200 && res.statusCode < 300 ? Buffer.concat(chunks) : null); });
+        res.on("error", () => { clearTimeout(timer); finish(null); });
+      });
+      req.on("error", () => { clearTimeout(timer); finish(null); });
+      req.end();
+    } catch (e) {
+      finish(null);
+    }
+  });
+}
+
+async function loadImageForPrint(src) {
+  if (!src) return null;
+  if (/^data:image\//i.test(src)) {
+    const img = nativeImage.createFromDataURL(src);
+    return img.isEmpty() ? null : img;
+  }
+  if (!/^https?:\/\//i.test(src)) return null;
+  const hit = imageCache.get(src);
+  if (hit && Date.now() - hit.at < IMAGE_CACHE_MS) return hit.img;
+  const bytes = await fetchBytes(src);
+  if (!bytes) { log.warn(`Bill layout: could not fetch image ${src}`); return null; }
+  const img = nativeImage.createFromBuffer(bytes);
+  if (img.isEmpty()) { log.warn(`Bill layout: not an image: ${src}`); return null; }
+  imageCache.set(src, { img, at: Date.now() });
+  return img;
+}
+
+async function resolveImageLines(lines) {
+  for (const line of lines) {
+    if (line.t !== "image") continue;
+    const img = await loadImageForPrint(line.src);
+    if (!img) continue; // the engine skips an image with no bytes rather than failing the print
+    const pct = Number(line.width) || 50;
+    const targetW = Math.max(8, Math.min(RASTER_WIDTH, Math.round((RASTER_WIDTH * pct) / 100 / 8) * 8));
+    const sized = img.getSize().width === targetW ? img : img.resize({ width: targetW, quality: "best" });
+    const size = sized.getSize();
+    if (!size.width || !size.height) continue;
+    line.raster = rasterBands(sized.toBitmap(), size.width, size.height).toString("latin1");
+  }
+}
+
+// 1-bit black/white PNG data URL at `width` pixels — what the printer will
+// actually draw, so the designer's preview and the image stored in the layout
+// are honest about how a logo comes out on thermal paper.
+function toMonoPngDataUrl(img, width) {
+  const sized = img.resize({ width, quality: "best" });
+  const size = sized.getSize();
+  const bgra = sized.toBitmap();
+  const out = Buffer.alloc(bgra.length);
+  for (let i = 0; i < bgra.length; i += 4) {
+    const lum = 0.114 * bgra[i] + 0.587 * bgra[i + 1] + 0.299 * bgra[i + 2] + (255 - bgra[i + 3]);
+    const v = lum < RASTER_THRESHOLD ? 0 : 255;
+    out[i] = v; out[i + 1] = v; out[i + 2] = v; out[i + 3] = 255;
+  }
+  return nativeImage.createFromBitmap(out, { width: size.width, height: size.height }).toDataURL();
+}
+
+// --- account sync ---
+// Talks to cravings.live with the cookies the app window is signed in with, so
+// the server knows which partner this is (and, for the Menuthere team, which
+// partner they are signed in as). No Hasura credentials live in the app.
+function apiRequest(method, apiPath, body, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (r) => { if (!done) { done = true; resolve(r); } };
+    try {
+      const req = net.request({ method, url: apiBase() + apiPath, useSessionCookies: true });
+      req.setHeader("Accept", "application/json");
+      if (body !== undefined) req.setHeader("Content-Type", "application/json");
+      const timer = setTimeout(() => { try { req.abort(); } catch (e) { /* gone */ } finish({ ok: false, error: "timeout" }); }, timeoutMs);
+      req.on("response", (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          clearTimeout(timer);
+          const text = Buffer.concat(chunks).toString("utf8");
+          let json = null;
+          try { json = text ? JSON.parse(text) : null; } catch (e) { json = null; }
+          finish({ ok: res.statusCode >= 200 && res.statusCode < 300 && !!json, status: res.statusCode, json });
+        });
+        res.on("error", (e) => { clearTimeout(timer); finish({ ok: false, error: e.message }); });
+      });
+      req.on("error", (e) => { clearTimeout(timer); finish({ ok: false, error: e.message }); });
+      if (body !== undefined) req.write(JSON.stringify(body));
+      req.end();
+    } catch (e) {
+      finish({ ok: false, error: e.message });
+    }
+  });
+}
+
+const templateSync = { state: "idle", message: "", at: null };
+let syncInFlight = null;
+
+function setSyncState(state, message) {
+  templateSync.state = state;
+  templateSync.message = message || "";
+  templateSync.at = new Date().toISOString();
+  log.info(`Bill layout sync: ${state}${message ? " - " + message : ""}`);
+}
+
+function templateStatus() {
+  const tpl = printConfig.billTemplate;
+  return {
+    storeName: printConfig.billStore ? printConfig.billStore.store_name : null,
+    hasTemplate: !!tpl,
+    blocks: tpl ? tpl.blocks.length : 0,
+    useDefault: !!printConfig.billTemplateUseDefault,
+    pending: !!printConfig.billTemplatePending,
+    syncedAt: printConfig.billTemplateSyncedAt,
+    updatedAt: printConfig.billTemplateUpdatedAt,
+    logoUrl: printConfig.billLogoUrl,
+    sync: Object.assign({}, templateSync),
+    activeType: printConfig.activeType,
+    printMode: printConfig.printMode,
+    hasLastBill: !!lastBillPayload,
+  };
+}
+
+function broadcastTemplateStatus() {
+  const status = templateStatus();
+  [settingsWindow, designerWindow].forEach((w) => {
+    try { if (w && !w.isDestroyed()) w.webContents.send("bill-template:status", status); } catch (e) { /* closing */ }
+  });
+}
+
+function describeSyncFailure(r) {
+  if (r.status === 401 || r.status === 403) return ["signed-out", "Sign in to the dashboard in the app window, then save again"];
+  if (r.status === 404) return ["unavailable", "Bill-layout sync is not available on the server"];
+  if (r.status && r.status >= 500) return ["offline", `Server error ${r.status}`];
+  if (r.status) return ["offline", `Unexpected reply (${r.status})`];
+  return ["offline", r.error === "timeout" ? "No reply from the server" : (r.error || "No connection")];
+}
+
+async function pushBillTemplate() {
+  const r = await apiRequest("PUT", BILL_TEMPLATE_API, { template: printConfig.billTemplate });
+  if (r.ok && r.json.ok) {
+    savePrintConfig(Object.assign({}, printConfig, {
+      billTemplatePending: false,
+      billTemplateSyncedAt: new Date().toISOString(),
+      billTemplateUpdatedAt: typeof r.json.updatedAt === "string" ? r.json.updatedAt : printConfig.billTemplateUpdatedAt,
+    }, r.json.logoUrl !== undefined ? { billLogoUrl: r.json.logoUrl || null } : {},
+       cleanStore(r.json.store) ? { billStore: cleanStore(r.json.store) } : {}));
+    setSyncState("synced", "Saved to your account");
+    return true;
+  }
+  const [state, message] = describeSyncFailure(r);
+  setSyncState(state, message);
+  return false;
+}
+
+async function pullBillTemplate() {
+  const r = await apiRequest("GET", BILL_TEMPLATE_API);
+  if (!(r.ok && r.json.ok)) {
+    const [state, message] = describeSyncFailure(r);
+    setSyncState(state, message);
+    return false;
+  }
+  const updates = {};
+  if (r.json.logoUrl !== undefined) updates.billLogoUrl = r.json.logoUrl || null;
+  if (cleanStore(r.json.store)) updates.billStore = cleanStore(r.json.store);
+  const tpl = BillTemplate.normalizeTemplate(r.json.template);
+  if (tpl) {
+    updates.billTemplate = tpl;
+    updates.billTemplatePending = false;
+    updates.billTemplateSyncedAt = new Date().toISOString();
+    updates.billTemplateUpdatedAt = typeof r.json.updatedAt === "string" ? r.json.updatedAt : printConfig.billTemplateUpdatedAt;
+    savePrintConfig(Object.assign({}, printConfig, updates));
+    setSyncState("synced", "Up to date with your account");
+    return true;
+  }
+  savePrintConfig(Object.assign({}, printConfig, updates));
+  // This PC has a layout the account does not (saved before sync existed, or
+  // while offline): send it up rather than throw it away.
+  if (printConfig.billTemplate) return pushBillTemplate();
+  setSyncState("synced", "No custom layout yet");
+  return true;
+}
+
+// A local save still waiting goes up; otherwise the account copy comes down.
+// One sync at a time; callers get the same promise while one is running.
+function syncBillTemplate(reason) {
+  if (syncInFlight) return syncInFlight;
+  setSyncState("syncing", reason || "");
+  broadcastTemplateStatus();
+  syncInFlight = (async () => {
+    try {
+      if (printConfig.billTemplatePending && printConfig.billTemplate) await pushBillTemplate();
+      else await pullBillTemplate();
+    } catch (e) {
+      setSyncState("offline", e.message);
+    } finally {
+      syncInFlight = null;
+      broadcastTemplateStatus();
+    }
+    return templateStatus();
+  })();
+  return syncInFlight;
+}
+
+// --- BILL LAYOUT WINDOW (designer.html) ---
+function openDesignerWindow() {
+  if (designerWindow && !designerWindow.isDestroyed()) {
+    designerWindow.show();
+    designerWindow.focus();
+    return;
+  }
+  designerWindow = new BrowserWindow({
+    width: 1120,
+    height: 780,
+    minWidth: 940,
+    minHeight: 600,
+    title: "Bill Layout",
+    autoHideMenuBar: true,
+    icon: path.join(__dirname, "build/icon.png"),
+    webPreferences: {
+      preload: path.join(__dirname, "designer-preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  designerWindow.setMenuBarVisibility(false);
+  designerWindow.loadFile(path.join(__dirname, "designer.html"));
+  designerWindow.on("closed", () => { designerWindow = null; });
+  // A fresh copy from the account whenever the window opens (a local save still
+  // waiting goes up first), so two PCs and the Menuthere team see one layout.
+  syncBillTemplate("window opened").catch(() => {});
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -1182,6 +1633,11 @@ function createWindow() {
               orderData = JSON.parse(jsonStr);
               jobName = (isBill ? "bill_" : "kot_") + orderData.id;
               log.info(`Received ${isBill ? "Bill" : "KOT"} JSON:`, orderData.id, `[timing] payload@${since()}`);
+              if (isBill) {
+                lastBillPayload = orderData;
+                adoptPayloadTemplate(orderData.bill_template);
+                rememberStoreFromBill(orderData);
+              }
 
               // Layout + Full Arabic are now chosen in the web dashboard and travel in
               // the print payload. A boolean `full_arabic` in the payload means this is a
@@ -1202,12 +1658,13 @@ function createWindow() {
                   if (fullArabic || receiptHasUnprintable(orderData, isBill)) {
                       log.warn("ESC/POS mode: non-ASCII text (e.g. Arabic) cannot be rendered by the printer font and will be dropped - switch to Raster to print it");
                   }
-                  if (isBill && orderData.bill_logo_url) {
-                      log.warn("ESC/POS mode: bill logo skipped (images need Raster mode)");
+                  const customLayout = isBill ? activeBillTemplate(orderData) : null;
+                  if (isBill && orderData.bill_logo_url && !customLayout) {
+                      log.warn("ESC/POS mode: bill logo skipped (images need Raster mode, or a custom bill layout with a logo block)");
                   }
-                  log.info("Using ESC/POS text print (default layout)");
+                  log.info(`Using ESC/POS text print (${customLayout ? "custom bill layout" : "default layout"})`);
                   escPosBuffer = isBill
-                      ? convertBillToEscPos(orderData)
+                      ? await buildEscPosBill(orderData)
                       : convertOrderToEscPos(orderData);
               } else if (isBill && isCustomBillLayout(layout)) {
                   if (webRendered) {
@@ -1427,11 +1884,12 @@ function createWindow() {
     if (isClaimedBlank(childUrl)) watchClaimedPrintWindow(child);
   });
 
-  // Ctrl+Shift+P opens Printer Settings (works even though the menu bar is hidden).
+  // Ctrl+Shift+P opens Printer Settings, Ctrl+Shift+L the Bill Layout window
+  // (both work even though the menu bar is hidden).
   mainWindow.webContents.on("before-input-event", (event, input) => {
-    if (input.control && input.shift && (input.key || "").toLowerCase() === "p") {
-      openSettingsWindow();
-    }
+    const key = (input.key || "").toLowerCase();
+    if (input.control && input.shift && key === "p") openSettingsWindow();
+    if (input.control && input.shift && key === "l") openDesignerWindow();
   });
 
   mainWindow.on("closed", () => {
@@ -1440,7 +1898,6 @@ function createWindow() {
 }
 
 // --- PRINTER SETTINGS WINDOW + TRAY ---
-let settingsWindow = null;
 let tray = null;
 
 function openSettingsWindow() {
@@ -1451,9 +1908,9 @@ function openSettingsWindow() {
   }
   settingsWindow = new BrowserWindow({
     width: 470,
-    height: 600,
+    height: 740,
     title: "Printer Settings",
-    resizable: false,
+    resizable: true,
     minimizable: false,
     maximizable: false,
     autoHideMenuBar: true,
@@ -1543,6 +2000,7 @@ function buildAppMenu() {
       label: "Printer",
       submenu: [
         { label: "Printer Settings…", accelerator: "CmdOrCtrl+Shift+P", click: () => openSettingsWindow() },
+        { label: "Bill Layout…", accelerator: "CmdOrCtrl+Shift+L", click: () => openDesignerWindow() },
         { label: "Test Print", click: () => { printTestSlip().catch((e) => log.warn("Test print failed:", e.message)); } },
         { type: "separator" },
         { role: "reload" },
@@ -1569,6 +2027,7 @@ function refreshTrayMenu() {
   if (!tray || tray.isDestroyed()) return;
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "Printer Settings", click: () => openSettingsWindow() },
+    { label: "Bill Layout", click: () => openDesignerWindow() },
     { label: "Test sound", click: () => testOrderSound() },
     {
       label: "Mute new-order sound",
@@ -1665,6 +2124,74 @@ ipcMain.on("settings:close", () => {
   if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.close();
 });
 
+// --- Bill layout IPC (settings.html + designer.html) ---
+ipcMain.handle("bill-template:get", () => ({
+  template: printConfig.billTemplate,
+  status: templateStatus(),
+  lastBill: lastBillPayload,
+  sample: sampleBill(),
+}));
+ipcMain.handle("bill-template:status", () => templateStatus());
+ipcMain.handle("bill-template:sync", () => syncBillTemplate("refresh"));
+ipcMain.handle("bill-template:save", async (_e, raw) => {
+  const tpl = BillTemplate.normalizeTemplate(raw);
+  if (!tpl) return { ok: false, error: "That layout could not be read", status: templateStatus() };
+  // Local first — the layout is safe on this PC even if the push fails.
+  savePrintConfig({ ...printConfig, billTemplate: tpl, billTemplatePending: true, billTemplateUpdatedAt: new Date().toISOString() });
+  broadcastTemplateStatus();
+  await syncBillTemplate("saved");
+  return { ok: true, status: templateStatus() };
+});
+ipcMain.handle("bill-template:use-default", (_e, on) => {
+  savePrintConfig({ ...printConfig, billTemplateUseDefault: !!on });
+  log.info(`Bill layout: ${on ? "printing the built-in layout on this PC" : "using the custom layout"}`);
+  broadcastTemplateStatus();
+  return templateStatus();
+});
+// Always the ESC/POS path: the layout only applies there, whatever the print
+// mode is set to — the window says so when the mode is Raster.
+ipcMain.handle("bill-template:test", async (_e, args) => {
+  try {
+    const tpl = BillTemplate.normalizeTemplate(args && args.template) || printConfig.billTemplate || BillTemplate.DEFAULT_TEMPLATE;
+    const useLast = !!(args && args.which === "last" && lastBillPayload);
+    const order = useLast ? lastBillPayload : sampleBill();
+    const out = await printTestSlip("bill", { template: tpl, order, escpos: true });
+    return { ok: true, message: String(out || "").trim(), usedLastBill: useLast };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+ipcMain.handle("bill-template:pick-image", async (_e, args) => {
+  const res = await dialog.showOpenDialog(designerWindow && !designerWindow.isDestroyed() ? designerWindow : undefined, {
+    title: "Choose an image for the bill",
+    properties: ["openFile"],
+    filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "bmp", "webp"] }],
+  });
+  if (res.canceled || !res.filePaths.length) return { ok: false, canceled: true };
+  const img = nativeImage.createFromPath(res.filePaths[0]);
+  if (img.isEmpty()) return { ok: false, error: "That file is not an image" };
+  const pct = Number(args && args.width) || 50;
+  // Stored at the 80 mm printhead's share of the width (576 dots); a 58 mm
+  // printer scales it down at print time. One bit per pixel keeps it small.
+  const width = Math.max(8, Math.min(576, Math.round((576 * pct) / 100)));
+  const dataUrl = toMonoPngDataUrl(img, width);
+  if (dataUrl.length > 120000) return { ok: false, error: "That image is too detailed for a bill. Try a simpler, smaller logo." };
+  return { ok: true, dataUrl, file: path.basename(res.filePaths[0]) };
+});
+// Preview of a remote image as the printer would draw it (fetched here so the
+// window, a local file, never has to deal with cross-origin rules).
+ipcMain.handle("bill-template:fetch-image", async (_e, url) => {
+  const img = await loadImageForPrint(url);
+  if (!img) return { ok: false };
+  const w = img.getSize().width || 576;
+  return { ok: true, dataUrl: toMonoPngDataUrl(img, Math.min(576, w)) };
+});
+ipcMain.on("designer:open", () => openDesignerWindow());
+ipcMain.on("designer:close", () => {
+  if (designerWindow && !designerWindow.isDestroyed()) designerWindow.close();
+});
+
+
 // --- Window Control Listeners (Unchanged) ---
 ipcMain.on("minimize-app", () => {
   if (mainWindow) mainWindow.minimize();
@@ -1686,6 +2213,11 @@ app.on("ready", () => {
   createWindow();
   createTray();
   checkForUpdates();
+  // Pick up a layout the Menuthere team (or another PC) saved to the account.
+  // Later than the window, so the dashboard's own load is not competing with it.
+  setTimeout(() => syncBillTemplate("startup").catch(() => {}), 6000);
+  // Dev convenience: `electron . --designer` opens the Bill Layout window at once.
+  if (process.argv.includes("--designer")) setTimeout(() => openDesignerWindow(), 1500);
 });
 
 app.on("window-all-closed", () => {

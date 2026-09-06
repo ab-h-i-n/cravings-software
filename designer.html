@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src data: https:;" />
+  <title>Bill Layout</title>
+  <style>
+    :root { --accent:#e8623a; --accent-ink:#b3421c; --accent-soft:#fdf1ec; --bg:#f6f6f7; --card:#fff; --line:#e3e3e6; --line2:#cfcfd4; --muted:#6b6b70; --ink:#1c1c1e; --ok:#1f9d55; --warn:#c27a12; --err:#d33; --paper:#fffdf7; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin:0; font-family:-apple-system,"Segoe UI",Roboto,Arial,sans-serif; background:var(--bg); color:var(--ink); font-size:13px; display:flex; flex-direction:column; overflow:hidden; }
+    button { font: inherit; }
+    .top { display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--card); border-bottom:1px solid var(--line); flex-shrink:0; }
+    .top .brand { font-weight:700; font-size:14px; margin-right:4px; }
+    .top .sp { flex:1; }
+    .pill { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; border:1px solid var(--line2); border-radius:999px; padding:3px 9px; color:var(--muted); max-width:340px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .pill::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--line2); flex-shrink:0; }
+    .pill.ok { color:var(--ok); border-color:var(--ok); } .pill.ok::before { background:var(--ok); }
+    .pill.warn { color:var(--warn); border-color:var(--warn); } .pill.warn::before { background:var(--warn); }
+    .pill.dirty { color:var(--accent-ink); border-color:var(--accent); } .pill.dirty::before { background:var(--accent); }
+    .pill.busy::before { background:var(--muted); }
+    .modewarn { font-size:11.5px; color:var(--warn); background:#fff7e8; border:1px solid #f1d9a8; border-radius:6px; padding:3px 8px; }
+    .btn { padding:6px 11px; border-radius:7px; border:1px solid var(--line2); background:#fff; font-size:12.5px; font-weight:600; color:var(--ink); cursor:pointer; white-space:nowrap; }
+    .btn:hover { background:#f0f0f2; }
+    .btn:disabled { opacity:.45; cursor:default; }
+    .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .btn.primary:hover { filter:brightness(.95); background:var(--accent); }
+    .btn.ghost { border-color:transparent; background:transparent; color:var(--muted); font-weight:500; }
+    .btn.ghost:hover { background:#ececee; color:var(--ink); }
+    .btn.mini { padding:3px 8px; font-size:11.5px; }
+    .seg { display:inline-flex; border:1px solid var(--line2); border-radius:7px; overflow:hidden; }
+    .seg button { border:none; background:#fff; padding:5px 10px; font-size:12px; color:var(--muted); cursor:pointer; }
+    .seg button + button { border-left:1px solid var(--line2); }
+    .seg button.on { background:var(--accent-soft); color:var(--accent-ink); font-weight:600; }
+    .menuwrap { position:relative; }
+    .menu { position:absolute; top:calc(100% + 4px); right:0; background:#fff; border:1px solid var(--line2); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.12); padding:4px; min-width:190px; z-index:20; }
+    .menu.left { right:auto; left:0; }
+    .menu button { display:block; width:100%; text-align:left; border:none; background:none; padding:7px 10px; border-radius:6px; font-size:12.5px; cursor:pointer; }
+    .menu button:hover { background:#f0f0f2; }
+    .menu button:disabled { color:var(--muted); cursor:default; background:none; }
+    .menu button small { display:block; color:var(--muted); font-size:11px; }
+    .menu .sep { border-top:1px solid var(--line); margin:4px 0; }
+
+    .panes { flex:1; min-height:0; display:grid; grid-template-columns:270px 1fr 310px; }
+    .pane { min-width:0; min-height:0; display:flex; flex-direction:column; background:var(--card); }
+    .pane + .pane { border-left:1px solid var(--line); }
+    .phd { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 12px 7px; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); flex-shrink:0; }
+    .phd .dim { font-weight:500; letter-spacing:0; text-transform:none; font-size:11.5px; }
+    .blocks { flex:1; overflow:auto; padding:0 8px 14px; }
+    .bk { display:grid; grid-template-columns:14px 44px 1fr 18px; align-items:center; gap:7px; padding:5px 6px; border-radius:6px; color:#47474d; cursor:pointer; user-select:none; }
+    .bk:hover { background:#f5f5f6; }
+    .bk.sel { background:var(--accent-soft); color:var(--accent-ink); }
+    .bk.child { margin-left:18px; }
+    .bk.off .tx, .bk.off .ty { opacity:.5; }
+    .bk.dragging { opacity:.4; }
+    .bk.over { box-shadow:inset 0 2px 0 var(--accent); }
+    .bk .drag { color:#c9c9ce; cursor:grab; }
+    .bk .ty, .grp .ty { font-family:Consolas,"Courier New",monospace; font-size:10px; font-weight:700; letter-spacing:.04em; color:var(--muted); background:#fafafb; border:1px solid var(--line); border-radius:4px; padding:1px 0; text-align:center; }
+    .bk.sel .ty { color:var(--accent-ink); border-color:var(--accent); background:transparent; }
+    .bk .tx { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-family:Consolas,"Courier New",monospace; font-size:12px; }
+    .bk .tx i { font-style:normal; color:var(--muted); font-family:"Segoe UI",sans-serif; font-size:11px; }
+    .bk .tx .tok, .grp .tx .tok { color:var(--accent-ink); }
+    .bk .eye { border:none; background:none; padding:0; color:#c9c9ce; cursor:pointer; display:flex; }
+    .bk .eye:hover { color:var(--ink); }
+    .bk .eye svg { width:14px; height:14px; }
+    .grp { display:grid; grid-template-columns:14px 44px 1fr auto; align-items:center; gap:7px; padding:6px 6px 4px; color:#47474d; margin-top:4px; cursor:pointer; user-select:none; }
+    .grp:hover { background:#f5f5f6; border-radius:6px; }
+    .grp.sel { background:var(--accent-soft); color:var(--accent-ink); border-radius:6px; }
+    .grp.over { box-shadow:inset 0 2px 0 var(--accent); }
+    .grp .tx { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .grp .tx .caret { display:inline-block; width:12px; color:var(--muted); font-size:10px; }
+    .grp .when { font-size:10.5px; color:var(--muted); font-family:Consolas,monospace; }
+    .grp .drag { color:#c9c9ce; cursor:grab; }
+    .dropend { height:26px; margin:2px 6px 0; border:1px dashed transparent; border-radius:6px; }
+    .dropend.over { border-color:var(--accent); }
+    .empty { color:var(--muted); font-size:12px; padding:10px 8px; }
+
+    .stagebody { flex:1; overflow:auto; background:var(--bg); padding:14px 20px 30px; display:flex; justify-content:center; align-items:flex-start; }
+    .paper { --cols:48; background:var(--paper); color:#151412; width:calc(var(--cols) * 1ch + 28px); padding:14px 14px 4px; flex-shrink:0; font-family:Consolas,"Courier New",monospace; font-size:12.4px; line-height:1.45; box-shadow:0 1px 0 #e4dfd2, 0 10px 26px rgba(20,20,30,.16); border-radius:2px 2px 0 0; }
+    .paper .pl { white-space:pre; min-height:1.45em; position:relative; border-radius:2px; cursor:pointer; }
+    .paper .pl:hover { background:rgba(232,98,58,.08); }
+    .paper .pl.sel { outline:2px solid var(--accent); outline-offset:1px; background:rgba(232,98,58,.10); }
+    .paper .pl.ghost { opacity:.32; }
+    .paper .pl.ghost::after { content:"hidden"; position:absolute; right:-4px; top:0; font-family:"Segoe UI",sans-serif; font-size:9px; color:var(--muted); background:var(--paper); padding:0 3px; opacity:0; }
+    .paper .pl.ghost:hover::after { opacity:1; }
+    .paper .pl.h2 { line-height:2.9em; min-height:2.9em; }
+    .paper .b { font-weight:700; }
+    .paper .u { text-decoration:underline; }
+    .paper .inv { background:#151412; color:var(--paper); }
+    .paper .wrap-wide { display:inline-block; vertical-align:bottom; text-align:left; }
+    .paper .wrap-wide > span { display:inline-block; transform-origin:0 100%; }
+    .paper .sz-wide { transform:scaleX(2); }
+    .paper .sz-big { transform:scale(2,2); }
+    .paper .sz-tall { display:inline-block; transform:scaleY(2); transform-origin:0 100%; }
+    .paper .qrph { display:inline-block; vertical-align:top; margin:2px 0; background:repeating-conic-gradient(#151412 0 25%, var(--paper) 0 50%) 0 0 / 6px 6px; outline:3px solid var(--paper); box-shadow:0 0 0 4px var(--paper), 0 0 0 5px #151412; }
+    .paper .imgline img { display:inline-block; vertical-align:top; image-rendering:auto; filter:grayscale(1) contrast(4); }
+    .paper .imgph { display:inline-block; border:1px dashed #b5b0a4; color:#8f8a7e; font-family:"Segoe UI",sans-serif; font-size:11px; padding:10px 0; text-align:center; }
+    .paper .pl.cut { margin-top:14px; border-top:1px dashed #d8d2c4; height:12px; cursor:default; }
+    .paper .pl.cut:hover { background:none; }
+    .paper .pl.cut span { position:absolute; right:0; top:-9px; font-family:"Segoe UI",sans-serif; font-size:10px; color:#8f8a7e; }
+    .paper .pl.cut::before { content:"\2702\FE0E"; position:absolute; left:-6px; top:-11px; font-size:13px; color:#8f8a7e; background:var(--paper); padding:0 2px; }
+
+    .inspbody { flex:1; overflow:auto; padding:0 14px 18px; }
+    .grp-t { font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:14px 0 6px; }
+    .field { margin-bottom:9px; }
+    .field > label { display:block; font-size:11.5px; color:var(--muted); margin-bottom:3px; }
+    .in, .ta, .slct, .num { width:100%; border:1px solid var(--line2); border-radius:6px; padding:6px 8px; background:#fff; font-size:12.5px; color:var(--ink); font-family:inherit; }
+    .in, .ta { font-family:Consolas,"Courier New",monospace; font-size:12px; }
+    .ta { resize:vertical; min-height:44px; }
+    .in:focus, .ta:focus, .slct:focus, .num:focus { outline:2px solid var(--accent); outline-offset:-1px; border-color:var(--accent); }
+    .toolbar { display:flex; gap:4px; margin:4px 0 2px; flex-wrap:wrap; align-items:center; }
+    .tb { border:1px solid var(--line2); border-radius:5px; padding:2px 7px; font-size:11.5px; font-family:Consolas,monospace; color:#47474d; background:#fff; cursor:pointer; }
+    .tb:hover { background:#f0f0f2; }
+    .tb.fill { margin-left:auto; font-family:"Segoe UI",sans-serif; max-width:150px; padding:2px 4px; }
+    .row2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+    .tog { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 0; border-bottom:1px solid var(--line); cursor:pointer; }
+    .tog:last-child { border-bottom:none; }
+    .tog .l { color:#47474d; font-size:12.5px; }
+    .tog .l small { display:block; color:var(--muted); font-size:11px; }
+    .tog input { width:16px; height:16px; accent-color:var(--accent); flex-shrink:0; margin:0; }
+    .chkline { display:flex; gap:12px; flex-wrap:wrap; font-size:12.5px; }
+    .chkline label { display:flex; gap:5px; align-items:center; cursor:pointer; }
+    .chkline input { accent-color:var(--accent); margin:0; }
+    .cellbox { border:1px solid var(--line); border-radius:8px; padding:8px 10px; margin-bottom:8px; background:#fafafb; }
+    .cellbox .ch { display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--muted); margin-bottom:4px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; }
+    .cellbox .ch button { border:none; background:none; color:var(--muted); cursor:pointer; font-size:11px; padding:0; }
+    .cellbox .ch button:hover { color:var(--err); }
+    .arrange { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:6px; }
+    .arrange .btn { padding:6px 8px; font-size:12px; }
+    .arrange .btn.danger { color:var(--err); }
+    .thumb { display:block; max-width:100%; max-height:120px; border:1px solid var(--line); background:#fff; padding:4px; image-rendering:pixelated; margin:4px 0 6px; }
+    .colrow { display:grid; grid-template-columns:18px 1fr 52px 66px 40px; gap:6px; align-items:center; margin-bottom:5px; }
+    .colrow input[type=checkbox] { accent-color:var(--accent); margin:0; }
+    .colrow .in, .colrow .num, .colrow .slct { padding:4px 6px; font-size:12px; }
+    .colrow .mv { display:flex; gap:2px; }
+    .colrow .mv button { border:1px solid var(--line2); background:#fff; border-radius:4px; width:18px; height:22px; font-size:10px; cursor:pointer; padding:0; }
+    .note { font-size:11.5px; color:var(--muted); line-height:1.45; margin:6px 0; }
+    .status { padding:5px 12px; font-size:12px; color:var(--muted); border-top:1px solid var(--line); background:var(--card); min-height:26px; flex-shrink:0; }
+    .status.ok { color:var(--ok); } .status.err { color:var(--err); }
+    .placeholder { color:var(--muted); font-size:12.5px; padding:14px 0; line-height:1.5; }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-drag" viewBox="0 0 14 14"><circle cx="5" cy="3.5" r="1.2" fill="currentColor"/><circle cx="9" cy="3.5" r="1.2" fill="currentColor"/><circle cx="5" cy="7" r="1.2" fill="currentColor"/><circle cx="9" cy="7" r="1.2" fill="currentColor"/><circle cx="5" cy="10.5" r="1.2" fill="currentColor"/><circle cx="9" cy="10.5" r="1.2" fill="currentColor"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 16 16"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+    <symbol id="i-eyeoff" viewBox="0 0 16 16"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.5 13.5l11-11" stroke="currentColor" stroke-width="1.3"/></symbol>
+  </svg>
+
+  <div class="top">
+    <span class="brand">Bill layout</span>
+    <span class="pill" id="pill">Loading…</span>
+    <span class="modewarn" id="modeWarn" hidden>Print mode is Raster. This layout prints in ESC/POS mode; switch it in Printer Settings.</span>
+    <span class="sp"></span>
+    <span class="seg" id="paperSeg"><button data-paper="58mm">58 mm · 32 cols</button><button data-paper="80mm">80 mm · 48 cols</button></span>
+    <button class="btn ghost" id="undoBtn" title="Ctrl+Z">Undo</button>
+    <button class="btn ghost" id="redoBtn" title="Ctrl+Y">Redo</button>
+    <button class="btn ghost" id="resetBtn" title="Start again from today's bill">Reset to default</button>
+    <span class="menuwrap">
+      <button class="btn" id="testBtn">Test print ▾</button>
+      <div class="menu" id="testMenu" hidden>
+        <button data-which="sample">Sample order<small>a delivery order with everything on it</small></button>
+        <button data-which="last" id="testLastBtn">Last printed bill<small>the real order this PC printed last</small></button>
+      </div>
+    </span>
+    <button class="btn primary" id="saveBtn" title="Ctrl+S">Save</button>
+    <button class="btn ghost" id="closeBtn">Close</button>
+  </div>
+
+  <div class="panes">
+    <div class="pane">
+      <div class="phd">
+        <span>Blocks</span>
+        <span class="menuwrap">
+          <button class="btn mini" id="addBtn">+ Add block</button>
+          <div class="menu" id="addMenu" hidden>
+            <button data-type="text">Text line<small>a line of text with fields</small></button>
+            <button data-type="row">Two-column row<small>label left, amount right</small></button>
+            <button data-type="items">Items table<small>one row per item</small></button>
+            <button data-type="charges">Extra charges<small>one row per charge</small></button>
+            <button data-type="rule">Separator<small>a full-width line</small></button>
+            <button data-type="space">Blank space<small>empty lines</small></button>
+            <button data-type="image">Image / logo<small>printed in black and white</small></button>
+            <button data-type="qr">QR code<small>online bill, UPI, location…</small></button>
+            <div class="sep"></div>
+            <button data-type="group">Section<small>blocks that show or hide together</small></button>
+          </div>
+        </span>
+      </div>
+      <div class="blocks" id="blocks"></div>
+    </div>
+    <div class="pane">
+      <div class="phd">
+        <span class="menuwrap"><button class="btn mini ghost" id="previewBtn" style="text-transform:none;letter-spacing:0">Preview: sample order ▾</button>
+          <div class="menu left" id="previewMenu" hidden>
+            <button data-order="sample">Sample order</button>
+            <button data-order="last" id="previewLastBtn">Last printed bill</button>
+          </div>
+        </span>
+        <span class="dim" id="colsInfo"></span>
+      </div>
+      <div class="stagebody"><div class="paper" id="paper"></div></div>
+    </div>
+    <div class="pane">
+      <div class="phd"><span id="inspTitle">Nothing selected</span><span class="dim" id="inspId"></span></div>
+      <div class="inspbody" id="insp"></div>
+    </div>
+  </div>
+  <div class="status" id="status"></div>
+
+  <script src="billTemplate.js"></script>
+  <script>
+    const BT = window.BillTemplate;
+    const $ = (id) => document.getElementById(id);
+    const clone = (o) => JSON.parse(JSON.stringify(o));
+
+    const state = {
+      tpl: null,            // the layout being edited
+      sel: null,            // selected block id
+      paper: "80mm",
+      history: [], future: [],
+      dirty: false, saving: false,
+      status: null,         // last status from main (sync, printers, logo)
+      sample: null,         // sample order with the partner's own store details (from main)
+      lastBill: null,       // last real bill this PC printed, for preview/test
+      previewOrder: "sample",
+      collapsed: new Set(),
+      drag: null,
+      imgCache: new Map(),  // url -> 1-bit data URL for the preview
+      imgPending: new Set(),
+      lastEditKey: null, lastEditAt: 0,
+    };
+
+    // ------------------------------------------------------------ helpers
+    function h(tag, attrs, ...children) {
+      const e = document.createElement(tag);
+      for (const k in (attrs || {})) {
+        const v = attrs[k];
+        if (v == null || v === false) continue;
+        if (k === "class") e.className = v;
+        else if (k === "html") e.innerHTML = v;
+        else if (k === "style") e.style.cssText = v;
+        else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+        else if (k === "value") e.value = v;
+        else if (k === "checked" || k === "disabled" || k === "selected" || k === "hidden") e[k] = !!v;
+        else e.setAttribute(k, v);
+      }
+      children.flat(Infinity).forEach((c) => {
+        if (c == null || c === false) return;
+        e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+      });
+      return e;
+    }
+    const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const withTokens = (s) => esc(s).replace(/\{[a-z_]+\}/g, (m) => '<span class="tok">' + m + "</span>");
+    const fmtTime = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleString([], { day: "2-digit", month: "short", hour: "numeric", minute: "2-digit" }); };
+    const cols = () => (state.paper === "58mm" ? 32 : 48);
+    function setStatus(msg, kind) { const el = $("status"); el.textContent = msg || ""; el.className = "status" + (kind ? " " + kind : ""); }
+
+    // Where a block lives: its parent array and index (top level or inside a section).
+    function locate(id) {
+      const top = state.tpl.blocks;
+      for (let i = 0; i < top.length; i++) {
+        if (top[i].id === id) return { block: top[i], list: top, index: i, group: null };
+        if (top[i].type === "group") {
+          const kids = top[i].blocks || [];
+          for (let j = 0; j < kids.length; j++) {
+            if (kids[j].id === id) return { block: kids[j], list: kids, index: j, group: top[i] };
+          }
+        }
+      }
+      return null;
+    }
+    const selected = () => (state.sel ? locate(state.sel) : null);
+
+    // ------------------------------------------------------------ history
+    // `key` coalesces a run of keystrokes in one field into a single undo step.
+    function commit(mutate, opts) {
+      opts = opts || {};
+      const now = Date.now();
+      const coalesce = opts.key && opts.key === state.lastEditKey && now - state.lastEditAt < 1200;
+      if (!coalesce) {
+        state.history.push(JSON.stringify(state.tpl));
+        if (state.history.length > 100) state.history.shift();
+        state.future = [];
+      }
+      state.lastEditKey = opts.key || null;
+      state.lastEditAt = now;
+      mutate(state.tpl);
+      state.dirty = true;
+      render(opts.quiet ? { inspector: false } : {});
+    }
+    function undo() {
+      if (!state.history.length) return;
+      state.future.push(JSON.stringify(state.tpl));
+      state.tpl = JSON.parse(state.history.pop());
+      state.lastEditKey = null;
+      state.dirty = true;
+      if (state.sel && !locate(state.sel)) state.sel = null;
+      render();
+    }
+    function redo() {
+      if (!state.future.length) return;
+      state.history.push(JSON.stringify(state.tpl));
+      state.tpl = JSON.parse(state.future.pop());
+      state.lastEditKey = null;
+      state.dirty = true;
+      if (state.sel && !locate(state.sel)) state.sel = null;
+      render();
+    }
+
+    // ------------------------------------------------------------ render
+    function render(what) {
+      what = what || {};
+      renderList();
+      renderPreview();
+      if (what.inspector !== false) renderInspector();
+      renderPill();
+      $("undoBtn").disabled = !state.history.length;
+      $("redoBtn").disabled = !state.future.length;
+      document.querySelectorAll("#paperSeg button").forEach((b) => b.classList.toggle("on", b.dataset.paper === state.paper));
+      $("colsInfo").textContent = state.paper + " · " + cols() + " columns · Font A";
+    }
+
+    function renderPill() {
+      const s = state.status || {};
+      const st = s.sync || {};
+      let text = "", cls = "";
+      if (state.saving) { text = "Saving…"; cls = "busy"; }
+      else if (state.dirty) { text = "Unsaved changes"; cls = "dirty"; }
+      else if (st.state === "syncing") { text = "Syncing with your account…"; cls = "busy"; }
+      else if (s.pending) { text = "Saved" + (s.updatedAt ? " · " + fmtTime(s.updatedAt) : ""); cls = "ok"; }
+      else if (s.hasTemplate) { text = "Saved to your account" + (s.syncedAt ? " · " + fmtTime(s.syncedAt) : ""); cls = "ok"; }
+      else text = "Not saved yet · this is today's bill";
+      const pill = $("pill");
+      pill.textContent = text;
+      pill.title = text;
+      pill.className = "pill" + (cls ? " " + cls : "");
+      $("modeWarn").hidden = !(s.printMode && s.printMode !== "escpos");
+      $("testLastBtn").disabled = !state.lastBill;
+      $("previewLastBtn").disabled = !state.lastBill;
+    }
+
+    // --- block list
+    function blockRow(b, group) {
+      const row = h("div", { class: "bk" + (b.id === state.sel ? " sel" : "") + (group ? " child" : "") + (b.hidden ? " off" : ""), draggable: "true", "data-id": b.id });
+      row.appendChild(h("svg", { class: "drag" }));
+      row.querySelector("svg").outerHTML = '<svg class="drag" width="14" height="14"><use href="#i-drag"/></svg>';
+      row.appendChild(h("span", { class: "ty" }, typeBadge(b.type)));
+      row.appendChild(h("span", { class: "tx", html: summaryHtml(b) }));
+      const eye = h("button", { class: "eye", title: b.hidden ? "Hidden — click to print it again" : "Printed — click to hide it", onclick: (e) => { e.stopPropagation(); commit((t) => { const l = locate(b.id); if (l) l.block.hidden = !l.block.hidden; }); } });
+      eye.innerHTML = '<svg><use href="#i-' + (b.hidden ? "eyeoff" : "eye") + '"/></svg>';
+      row.appendChild(eye);
+      row.addEventListener("click", () => select(b.id));
+      wireDrag(row, b.id);
+      return row;
+    }
+    function groupRow(g) {
+      const collapsed = state.collapsed.has(g.id);
+      const row = h("div", { class: "grp" + (g.id === state.sel ? " sel" : ""), draggable: "true", "data-id": g.id });
+      row.innerHTML = '<svg class="drag" width="14" height="14"><use href="#i-drag"/></svg>';
+      row.appendChild(h("span", { class: "ty" }, "SEC"));
+      const tx = h("span", { class: "tx" });
+      const caret = h("span", { class: "caret", onclick: (e) => { e.stopPropagation(); if (collapsed) state.collapsed.delete(g.id); else state.collapsed.add(g.id); renderList(); } }, collapsed ? "▸" : "▾");
+      tx.appendChild(caret);
+      tx.appendChild(h("span", null, (g.hidden ? "(hidden) " : "") + (g.label || "Section") + (collapsed ? "  · " + (g.blocks || []).length : "")));
+      row.appendChild(tx);
+      row.appendChild(h("span", { class: "when" }, whenSummary(g.when)));
+      row.addEventListener("click", () => select(g.id));
+      wireDrag(row, g.id);
+      return row;
+    }
+    function typeBadge(t) { return { text: "TXT", row: "ROW", rule: "RULE", space: "SPC", image: "IMG", qr: "QR", items: "ITEMS", charges: "CHG", group: "SEC" }[t] || t.toUpperCase(); }
+    function summaryHtml(b) {
+      const s = BT.summarizeBlock(b);
+      const bits = [];
+      const st = b.style || b.rowStyle || {};
+      if (st.size && st.size !== "normal") bits.push(st.size);
+      if (st.bold) bits.push("bold");
+      if (st.align && st.align !== "left") bits.push(st.align);
+      if (b.when) bits.push(whenSummary(b.when));
+      return withTokens(s) + (bits.length ? ' <i>· ' + esc(bits.join(" · ")) + "</i>" : "");
+    }
+    function whenSummary(w) {
+      if (!w) return "";
+      if (w.orderType) return "only " + w.orderType.map((t) => ({ dine_in: "dine-in", takeaway: "takeaway", delivery: "delivery" }[t])).join("/");
+      const f = BT.WHEN_FIELDS.find((x) => x.key === (w.has || w.missing));
+      const label = f ? f.label : (w.has || w.missing);
+      return (w.has ? "when " : "unless ") + label;
+    }
+    function renderList() {
+      const box = $("blocks");
+      box.innerHTML = "";
+      if (!state.tpl.blocks.length) box.appendChild(h("div", { class: "empty" }, "No blocks. Add one, or Reset to default."));
+      state.tpl.blocks.forEach((b) => {
+        if (b.type === "group") {
+          box.appendChild(groupRow(b));
+          if (!state.collapsed.has(b.id)) (b.blocks || []).forEach((c) => box.appendChild(blockRow(c, b)));
+        } else box.appendChild(blockRow(b, null));
+      });
+      const end = h("div", { class: "dropend" });
+      end.addEventListener("dragover", (e) => { e.preventDefault(); end.classList.add("over"); });
+      end.addEventListener("dragleave", () => end.classList.remove("over"));
+      end.addEventListener("drop", (e) => { e.preventDefault(); end.classList.remove("over"); if (state.drag) moveBlock(state.drag, null); });
+      box.appendChild(end);
+      const selRow = box.querySelector('[data-id="' + CSS.escape(state.sel || "") + '"]');
+      if (selRow && state.scrollToSel) { selRow.scrollIntoView({ block: "nearest" }); state.scrollToSel = false; }
+    }
+    function wireDrag(row, id) {
+      row.addEventListener("dragstart", (e) => { state.drag = id; e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", id); } catch (err) { /* ie */ } row.classList.add("dragging"); });
+      row.addEventListener("dragend", () => { row.classList.remove("dragging"); state.drag = null; document.querySelectorAll(".over").forEach((el) => el.classList.remove("over")); });
+      row.addEventListener("dragover", (e) => { if (!state.drag || state.drag === id) return; e.preventDefault(); row.classList.add("over"); });
+      row.addEventListener("dragleave", () => row.classList.remove("over"));
+      row.addEventListener("drop", (e) => { e.preventDefault(); row.classList.remove("over"); if (state.drag && state.drag !== id) moveBlock(state.drag, id); });
+    }
+    // Put `dragId` before `targetId` (into the target's section if it has one);
+    // null target = end of the top level. Sections never nest.
+    function moveBlock(dragId, targetId) {
+      commit((t) => {
+        const from = locate(dragId);
+        if (!from) return;
+        if (targetId && from.block.type === "group") {
+          const tl = locate(targetId);
+          if (tl && tl.group && tl.group.id === dragId) return; // its own child
+        }
+        from.list.splice(from.index, 1);
+        if (!targetId) { t.blocks.push(from.block); return; }
+        const to = locate(targetId);
+        if (!to) { t.blocks.push(from.block); return; }
+        if (from.block.type === "group" && to.group) {
+          // a section cannot go inside a section: land before that section
+          const gi = t.blocks.indexOf(to.group);
+          t.blocks.splice(gi < 0 ? t.blocks.length : gi, 0, from.block);
+          return;
+        }
+        to.list.splice(to.index, 0, from.block);
+      });
+    }
+
+    // --- preview
+    function previewBill() {
+      if (state.previewOrder === "last" && state.lastBill) return state.lastBill;
+      return state.sample || Object.assign({}, BT.SAMPLE_BILL, { sample_store: true, store_logo_url: (state.status && state.status.logoUrl) || null });
+    }
+    // "sample order · OREO DEMO", or a plain "sample store" until this PC knows the partner's.
+    function previewLabel() {
+      if (state.previewOrder === "last" && state.lastBill) return "last printed bill";
+      const b = previewBill();
+      return "sample order · " + (b.sample_store ? "sample store" : (b.store_name || "your store"));
+    }
+    function renderPreview() {
+      const paper = $("paper");
+      const bill = previewBill();
+      const lines = BT.resolveBill(state.tpl, bill, { preview: true, paper: state.paper });
+      lines.forEach((l) => {
+        if (l.t !== "image" || !l.src) return;
+        if (/^data:/i.test(l.src)) { l.previewSrc = l.src; return; }
+        const hit = state.imgCache.get(l.src);
+        if (hit) { l.previewSrc = hit; return; }
+        if (!state.imgPending.has(l.src)) {
+          state.imgPending.add(l.src);
+          window.designer.fetchImage(l.src).then((r) => {
+            state.imgPending.delete(l.src);
+            if (r && r.ok) { state.imgCache.set(l.src, r.dataUrl); renderPreview(); }
+          }).catch(() => state.imgPending.delete(l.src));
+        }
+      });
+      const phys = BT.fitLines(lines, cols());
+      paper.style.setProperty("--cols", cols());
+      paper.innerHTML = BT.physToHtml(phys, { selectedId: state.sel, paper: state.paper });
+      $("previewBtn").textContent = "Preview: " + previewLabel() + " ▾";
+      $("previewBtn").title = previewBill().sample_store
+        ? "Your own store name, address and tax numbers appear here once the app has synced with your account, or after the first bill prints on this PC."
+        : "Sample order lines with your store's own details.";
+    }
+    $("paper").addEventListener("click", (e) => {
+      const el = e.target.closest("[data-block]");
+      if (!el || !el.dataset.block) return;
+      state.scrollToSel = true;
+      select(el.dataset.block);
+    });
+
+    function select(id) {
+      state.sel = id;
+      const l = locate(id);
+      if (l && l.group) state.collapsed.delete(l.group.id);
+      render();
+    }
+
+    // ------------------------------------------------------------ inspector
+    function textControl(label, value, onInput, opts) {
+      opts = opts || {};
+      const ta = opts.multiline
+        ? h("textarea", { class: "ta", rows: opts.rows || 2, spellcheck: "false" })
+        : h("input", { class: "in", type: "text", spellcheck: "false" });
+      ta.value = value || "";
+      ta.addEventListener("input", () => onInput(ta.value));
+      const wrap = h("div", { class: "field" }, label ? h("label", null, label) : null, ta);
+      if (opts.tags !== false) wrap.appendChild(tagToolbar(ta, onInput, opts));
+      return wrap;
+    }
+    function tagToolbar(ta, onInput, opts) {
+      const wrapSel = (open, close) => {
+        const s = ta.selectionStart || 0, e = ta.selectionEnd || 0, v = ta.value;
+        const sel = v.slice(s, e);
+        let out, range;
+        if (sel.startsWith(open) && sel.endsWith(close) && sel.length >= open.length + close.length) {
+          out = v.slice(0, s) + sel.slice(open.length, sel.length - close.length) + v.slice(e);
+          range = [s, e - open.length - close.length];
+        } else if (v.slice(s - open.length, s) === open && v.slice(e, e + close.length) === close) {
+          out = v.slice(0, s - open.length) + sel + v.slice(e + close.length);
+          range = [s - open.length, e - open.length];
+        } else {
+          out = v.slice(0, s) + open + sel + close + v.slice(e);
+          range = [s + open.length, e + open.length];
+        }
+        ta.value = out;
+        ta.focus();
+        ta.setSelectionRange(range[0], range[1]);
+        onInput(out);
+      };
+      const btn = (label, tag, title) => h("button", { class: "tb", type: "button", title: title + " (select words first, or type between the tags)", onclick: () => wrapSel("<" + tag + ">", "</" + tag + ">") }, label);
+      const sel = h("select", { class: "tb fill", title: "Insert a field at the cursor" });
+      sel.appendChild(h("option", { value: "" }, "Insert field…"));
+      const fields = (opts.itemFields ? BT.ITEM_FIELDS.map((f) => Object.assign({ group: "This item" }, f)) : []).concat(BT.FIELDS);
+      const groups = {};
+      fields.forEach((f) => { (groups[f.group] = groups[f.group] || []).push(f); });
+      Object.keys(groups).forEach((g) => {
+        const og = h("optgroup", { label: g });
+        groups[g].forEach((f) => og.appendChild(h("option", { value: f.key }, f.label + "  {" + f.key + "}")));
+        sel.appendChild(og);
+      });
+      sel.addEventListener("change", () => {
+        if (!sel.value) return;
+        const s = ta.selectionStart || 0, e = ta.selectionEnd || 0;
+        const tok = "{" + sel.value + "}";
+        ta.value = ta.value.slice(0, s) + tok + ta.value.slice(e);
+        ta.focus();
+        ta.setSelectionRange(s + tok.length, s + tok.length);
+        onInput(ta.value);
+        sel.value = "";
+      });
+      return h("div", { class: "toolbar" },
+        btn("B", "b", "Bold"), btn("U", "u", "Underline"), btn("big", "big", "Double width and height"),
+        btn("wide", "wide", "Double width"), btn("tall", "tall", "Double height"), btn("inv", "inv", "White on black"),
+        sel);
+    }
+    function selectControl(label, value, options, onChange) {
+      const sel = h("select", { class: "slct" });
+      options.forEach((o) => sel.appendChild(h("option", { value: o.value, selected: o.value === value }, o.label)));
+      sel.value = value;
+      sel.addEventListener("change", () => onChange(sel.value));
+      return h("div", { class: "field" }, label ? h("label", null, label) : null, sel);
+    }
+    function numberControl(label, value, min, max, onChange) {
+      const inp = h("input", { class: "num", type: "number", min, max, step: 1 });
+      inp.value = value;
+      inp.addEventListener("change", () => onChange(Math.min(max, Math.max(min, parseInt(inp.value, 10) || min))));
+      return h("div", { class: "field" }, label ? h("label", null, label) : null, inp);
+    }
+    function toggleControl(label, hint, checked, onChange) {
+      const inp = h("input", { type: "checkbox", checked });
+      inp.addEventListener("change", () => onChange(inp.checked));
+      return h("label", { class: "tog" }, h("span", { class: "l" }, label, hint ? h("small", null, hint) : null), inp);
+    }
+    const SIZE_OPTIONS = [{ value: "normal", label: "Normal" }, { value: "tall", label: "Tall (2× height)" }, { value: "wide", label: "Wide (2× width)" }, { value: "big", label: "Big (2× both)" }];
+    const ALIGN_OPTIONS = [{ value: "left", label: "Left" }, { value: "center", label: "Center" }, { value: "right", label: "Right" }];
+
+    // Whole-line style editor; `get`/`set` address the style object on the block.
+    function styleControls(get, set, opts) {
+      opts = opts || {};
+      const st = get() || {};
+      const upd = (patch) => set(Object.assign({}, get() || {}, patch));
+      const grid = h("div", { class: opts.align === false ? "row2" : "row3" },
+        opts.align === false ? null : selectControl("Align", st.align || "left", ALIGN_OPTIONS, (v) => upd({ align: v })),
+        selectControl("Bold", st.bold ? "1" : "0", [{ value: "0", label: "Off" }, { value: "1", label: "On" }], (v) => upd({ bold: v === "1" })),
+        selectControl("Size", st.size || "normal", SIZE_OPTIONS, (v) => upd({ size: v })));
+      const extras = h("div", null,
+        toggleControl("Underline", null, !!st.underline, (v) => upd({ underline: v })),
+        toggleControl("White on black", "inverted, for a heading that must stand out", !!st.invert, (v) => upd({ invert: v })));
+      return [grid, extras];
+    }
+
+    const ORDER_TYPE_OPTIONS = [{ value: "dine_in", label: "Dine-in" }, { value: "takeaway", label: "Takeaway" }, { value: "delivery", label: "Delivery" }];
+    function conditionControls(b) {
+      const w = b.when || null;
+      const kind = !w ? "always" : (w.orderType ? "orderType" : (w.has ? "has" : "missing"));
+      const setWhen = (nw) => commit((t) => { const l = locate(b.id); if (!l) return; if (nw) l.block.when = nw; else delete l.block.when; });
+      const parts = [];
+      parts.push(selectControl("Print this block", kind, [
+        { value: "always", label: "Always" },
+        { value: "orderType", label: "Only for some order types" },
+        { value: "has", label: "Only when…" },
+        { value: "missing", label: "Only when there is no…" },
+      ], (v) => {
+        if (v === "always") setWhen(null);
+        else if (v === "orderType") setWhen({ orderType: ["delivery"] });
+        else if (v === "has") setWhen({ has: "customer" });
+        else setWhen({ missing: "customer" });
+      }));
+      if (kind === "orderType") {
+        const line = h("div", { class: "chkline", style: "margin:-2px 0 10px" });
+        ORDER_TYPE_OPTIONS.forEach((o) => {
+          const inp = h("input", { type: "checkbox", checked: w.orderType.indexOf(o.value) !== -1 });
+          inp.addEventListener("change", () => {
+            const list = ORDER_TYPE_OPTIONS.map((x) => x.value).filter((k) => (k === o.value ? inp.checked : w.orderType.indexOf(k) !== -1));
+            setWhen({ orderType: list.length ? list : ["delivery"] });
+          });
+          line.appendChild(h("label", null, inp, o.label));
+        });
+        parts.push(line);
+      } else if (kind === "has" || kind === "missing") {
+        parts.push(selectControl(null, w.has || w.missing, BT.WHEN_FIELDS.map((f) => ({ value: f.key, label: f.label })), (v) => setWhen(kind === "has" ? { has: v } : { missing: v })));
+      }
+      return parts;
+    }
+
+    function arrangeControls(b, loc) {
+      const move = (dir) => commit((t) => {
+        const l = locate(b.id);
+        if (!l) return;
+        const j = l.index + dir;
+        if (j < 0 || j >= l.list.length) return;
+        l.list.splice(l.index, 1);
+        l.list.splice(j, 0, l.block);
+      });
+      const parts = [h("div", { class: "arrange" },
+        h("button", { class: "btn", onclick: () => move(-1), disabled: loc.index === 0 }, "▲ Move up"),
+        h("button", { class: "btn", onclick: () => move(1), disabled: loc.index >= loc.list.length - 1 }, "▼ Move down"),
+        h("button", { class: "btn", onclick: () => duplicateBlock(b.id) }, "Duplicate"),
+        h("button", { class: "btn danger", onclick: () => deleteBlock(b.id) }, "Delete"))];
+      if (loc.group) {
+        parts.push(h("div", { class: "arrange", style: "grid-template-columns:1fr" },
+          h("button", { class: "btn", onclick: () => commit((t) => { const l = locate(b.id); if (!l || !l.group) return; l.list.splice(l.index, 1); const gi = t.blocks.indexOf(l.group); t.blocks.splice(gi + 1, 0, l.block); }) }, "Move out of the section")));
+      } else if (b.type !== "group") {
+        const sections = state.tpl.blocks.filter((x) => x.type === "group");
+        if (sections.length) {
+          parts.push(selectControl("Move into a section", "", [{ value: "", label: "Choose…" }].concat(sections.map((g) => ({ value: g.id, label: g.label || "Section" }))), (v) => {
+            if (!v) return;
+            commit((t) => { const l = locate(b.id); const g = t.blocks.find((x) => x.id === v); if (!l || !g) return; l.list.splice(l.index, 1); (g.blocks = g.blocks || []).push(l.block); });
+          }));
+        }
+      }
+      return parts;
+    }
+
+    function freshIds(b) {
+      const c = clone(b);
+      c.id = BT.uid(c.type.slice(0, 2));
+      if (c.blocks) c.blocks.forEach((k) => { k.id = BT.uid(k.type.slice(0, 2)); });
+      return c;
+    }
+    function duplicateBlock(id) {
+      commit((t) => { const l = locate(id); if (!l) return; const c = freshIds(l.block); l.list.splice(l.index + 1, 0, c); state.sel = c.id; });
+    }
+    function deleteBlock(id) {
+      commit((t) => { const l = locate(id); if (!l) return; l.list.splice(l.index, 1); state.sel = null; });
+    }
+    function addBlock(type) {
+      const nb = BT.newBlock(type);
+      if (!nb) return;
+      commit((t) => {
+        const l = selected();
+        if (!l || type === "group" && l.group) { t.blocks.push(nb); }
+        else if (type === "group") { const i = t.blocks.indexOf(l.group || l.block); t.blocks.splice(i + 1, 0, nb); }
+        else if (l.block.type === "group") { (l.block.blocks = l.block.blocks || []).push(nb); state.collapsed.delete(l.block.id); }
+        else l.list.splice(l.index + 1, 0, nb);
+        state.sel = nb.id;
+      });
+      state.scrollToSel = true;
+      renderList();
+    }
+
+    function patchBlock(id, fn, key) {
+      commit((t) => { const l = locate(id); if (l) fn(l.block); }, { key, quiet: !!key });
+    }
+
+    function renderInspector() {
+      const box = $("insp");
+      box.innerHTML = "";
+      const loc = selected();
+      if (!loc) {
+        $("inspTitle").textContent = "Nothing selected";
+        $("inspId").textContent = "";
+        box.appendChild(h("div", { class: "placeholder" }, "Click a line on the paper, or a block in the list, to edit it. Drag blocks to reorder them; the eye hides a block without deleting it."));
+        return;
+      }
+      const b = loc.block;
+      $("inspTitle").textContent = BT.TYPE_LABELS[b.type] || b.type;
+      $("inspId").textContent = loc.group ? "in " + (loc.group.label || "section") : "";
+      const P = (id, fn, key) => patchBlock(id, fn, key);
+      const section = (title) => box.appendChild(h("div", { class: "grp-t" }, title));
+      const add = (...els) => els.flat().forEach((e) => e && box.appendChild(e));
+
+      switch (b.type) {
+        case "text":
+          section("Text");
+          add(textControl(null, b.text, (v) => P(b.id, (x) => { x.text = v; }, "text:" + b.id), { multiline: true, rows: 2 }));
+          add(h("div", { class: "note" }, "Fields like {store_name} are filled in from the order. Select words and use B / big to style just those words."));
+          section("Whole line");
+          add(styleControls(() => b.style, (s) => P(b.id, (x) => { x.style = s; })));
+          add(toggleControl("Wrap long text at spaces", "off: the printer breaks the line itself", b.wrap !== false, (v) => P(b.id, (x) => { if (v) delete x.wrap; else x.wrap = false; })));
+          break;
+        case "row": {
+          section("Cells");
+          (b.cells || []).forEach((c, i) => {
+            const card = h("div", { class: "cellbox" });
+            card.appendChild(h("div", { class: "ch" }, h("span", null, "Cell " + (i + 1)), (b.cells.length > 2) ? h("button", { onclick: () => P(b.id, (x) => { x.cells.splice(i, 1); }) }, "remove") : null));
+            card.appendChild(textControl(null, c.text, (v) => P(b.id, (x) => { x.cells[i].text = v; }, "cell:" + b.id + ":" + i)));
+            const widthKind = c.width === "flex" ? "flex" : (typeof c.width === "number" ? "fixed" : "auto");
+            card.appendChild(h("div", { class: "row2" },
+              selectControl("Align", c.align || "left", ALIGN_OPTIONS, (v) => P(b.id, (x) => { x.cells[i].align = v; })),
+              selectControl("Width", widthKind, [{ value: "auto", label: "As wide as its text" }, { value: "flex", label: "Fill the rest (wraps)" }, { value: "fixed", label: "Fixed columns" }], (v) => P(b.id, (x) => { if (v === "flex") x.cells[i].width = "flex"; else if (v === "fixed") x.cells[i].width = 12; else delete x.cells[i].width; }))));
+            if (widthKind === "fixed") card.appendChild(numberControl("Columns", c.width, 1, 60, (v) => P(b.id, (x) => { x.cells[i].width = v; })));
+            box.appendChild(card);
+          });
+          if ((b.cells || []).length < 4) add(h("button", { class: "btn mini", onclick: () => P(b.id, (x) => { x.cells.push({ text: "", align: "right" }); }) }, "+ Add a cell"));
+          add(h("div", { class: "note" }, "One cell fills the remaining width and wraps; the first cell does if none is set to fill."));
+          section("Whole line");
+          add(styleControls(() => b.style, (s) => P(b.id, (x) => { x.style = s; }), { align: false }));
+          break;
+        }
+        case "rule": {
+          section("Separator");
+          const presets = ["-", "=", "_", ".", "*", "~", "#"];
+          const cur = b.char || "-";
+          add(selectControl("Character", presets.indexOf(cur) !== -1 ? cur : "custom", presets.map((c) => ({ value: c, label: c.repeat(12) })).concat([{ value: "custom", label: "Custom…" }]), (v) => P(b.id, (x) => { if (v === "custom") x.char = "-="; else if (v === "-") delete x.char; else x.char = v; })));
+          if (presets.indexOf(cur) === -1) add(textControl("Custom pattern (repeats across the line)", cur, (v) => P(b.id, (x) => { if (v) x.char = v.slice(0, 8); }, "rule:" + b.id), { tags: false }));
+          break;
+        }
+        case "space":
+          section("Blank space");
+          add(numberControl("Empty lines", b.lines || 1, 1, 10, (v) => P(b.id, (x) => { x.lines = v; })));
+          break;
+        case "image": {
+          section("Picture");
+          const isLogo = b.src === "logo";
+          add(selectControl("Source", isLogo ? "logo" : "file", [{ value: "logo", label: "Store logo from the dashboard" }, { value: "file", label: "A picture from this PC" }], (v) => {
+            if (v === "logo") P(b.id, (x) => { x.src = "logo"; });
+            else pickImage(b.id);
+          }));
+          if (isLogo) {
+            const url = state.status && state.status.logoUrl;
+            add(h("div", { class: "note" }, url ? "Uses the logo uploaded under Settings → Bill Printing in the dashboard." : "No logo is set in the dashboard yet (Settings → Bill Printing → Bill logo), so this block prints nothing."));
+          } else {
+            add(h("img", { class: "thumb", src: b.src, alt: "" }));
+            add(h("button", { class: "btn mini", onclick: () => pickImage(b.id) }, "Choose another picture…"));
+          }
+          add(h("div", { class: "row2", style: "margin-top:8px" },
+            selectControl("Width", String(b.width || 50), BT.IMAGE_WIDTHS.map((w) => ({ value: String(w), label: w + "% of the paper" })), (v) => P(b.id, (x) => { x.width = Number(v); })),
+            selectControl("Align", b.align || "center", ALIGN_OPTIONS, (v) => P(b.id, (x) => { x.align = v; }))));
+          add(h("div", { class: "note" }, "Thermal printers draw pictures in pure black and white. Bold, simple logos come out best."));
+          break;
+        }
+        case "qr": {
+          section("QR code");
+          add(selectControl("Encodes", b.source || "bill_detail", [
+            { value: "bill_detail", label: "Link to the online bill" },
+            { value: "upi", label: "UPI payment (amount included)" },
+            { value: "delivery_location", label: "Delivery location on Google Maps" },
+            { value: "custom", label: "Custom text or URL" },
+          ], (v) => P(b.id, (x) => { x.source = v; })));
+          if (b.source === "custom") add(textControl("Text or URL (fields allowed)", b.value, (v) => P(b.id, (x) => { x.value = v; }, "qrv:" + b.id), { tags: false }));
+          else add(h("div", { class: "note" }, { bill_detail: "Prints only when the online-bill QR is switched on in the dashboard.", upi: "Prints only when a UPI id with the payment QR is set in the dashboard.", delivery_location: "Prints only when the order has a map pin." }[b.source]));
+          add(selectControl("Size", b.size || "s", [{ value: "s", label: "Small" }, { value: "m", label: "Medium" }, { value: "l", label: "Large" }], (v) => P(b.id, (x) => { x.size = v; })));
+          add(textControl("Caption above", b.caption, (v) => P(b.id, (x) => { x.caption = v; }, "qrc:" + b.id), { tags: false }));
+          add(textControl("Text below", b.captionBelow, (v) => P(b.id, (x) => { x.captionBelow = v; }, "qrb:" + b.id), { tags: false }));
+          break;
+        }
+        case "items": {
+          section("Items table");
+          add(selectControl("Layout", b.layout || "inline", [{ value: "inline", label: "One line per item, amount on the right" }, { value: "columns", label: "Columns with a header" }], (v) => P(b.id, (x) => { x.layout = v; if (v === "columns" && !x.columns) x.columns = clone(BT.DEFAULT_COLUMNS); if (v === "inline" && !x.format) x.format = "{qty} x {name}"; })));
+          if ((b.layout || "inline") === "inline") {
+            add(textControl("Line format", b.format || "{qty} x {name}", (v) => P(b.id, (x) => { x.format = v; }, "fmt:" + b.id), { itemFields: true }));
+            add(h("div", { class: "note" }, "Fields for this item: {qty} {name} {price} {amount} {notes} {category}. The line amount always sits at the right."));
+          } else {
+            const colsNow = b.columns && b.columns.length ? b.columns : clone(BT.DEFAULT_COLUMNS);
+            const keys = colsNow.map((c) => c.key);
+            const all = keys.concat(BT.ITEM_COLUMN_KEYS.filter((k) => keys.indexOf(k) === -1));
+            const wrap = h("div");
+            wrap.appendChild(h("div", { class: "colrow", style: "color:#6b6b70;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em" }, h("span"), h("span", null, "Column · label"), h("span", null, "Width"), h("span", null, "Align"), h("span")));
+            all.forEach((key) => {
+              const col = colsNow.find((c) => c.key === key);
+              const on = !!col;
+              const dflt = BT.DEFAULT_COLUMNS.find((d) => d.key === key);
+              const chk = h("input", { type: "checkbox", checked: on });
+              chk.addEventListener("change", () => P(b.id, (x) => {
+                x.columns = x.columns && x.columns.length ? x.columns : clone(BT.DEFAULT_COLUMNS);
+                if (chk.checked) { if (!x.columns.some((c) => c.key === key)) x.columns.push(clone(dflt)); }
+                else x.columns = x.columns.filter((c) => c.key !== key);
+              }));
+              const label = h("input", { class: "in", type: "text", disabled: !on, value: on ? col.label : dflt.label, title: key });
+              label.addEventListener("input", () => P(b.id, (x) => { const c = x.columns.find((k) => k.key === key); if (c) c.label = label.value; }, "col:" + b.id + ":" + key));
+              const width = h("input", { class: "num", type: "number", min: 1, max: 40, disabled: !on || key === "name", value: key === "name" ? "" : (on ? col.width : dflt.width), placeholder: key === "name" ? "fill" : "" });
+              width.addEventListener("change", () => P(b.id, (x) => { const c = x.columns.find((k) => k.key === key); if (c && key !== "name") c.width = Math.min(40, Math.max(1, parseInt(width.value, 10) || dflt.width)); }));
+              const align = h("select", { class: "slct", disabled: !on });
+              ALIGN_OPTIONS.forEach((o) => align.appendChild(h("option", { value: o.value, selected: o.value === (on ? col.align : dflt.align) }, o.label.slice(0, 1))));
+              align.addEventListener("change", () => P(b.id, (x) => { const c = x.columns.find((k) => k.key === key); if (c) c.align = align.value; }));
+              const mv = h("div", { class: "mv" },
+                h("button", { type: "button", disabled: !on || keys.indexOf(key) <= 0, onclick: () => P(b.id, (x) => { const i = x.columns.findIndex((c) => c.key === key); if (i > 0) { const [c] = x.columns.splice(i, 1); x.columns.splice(i - 1, 0, c); } }) }, "▲"),
+                h("button", { type: "button", disabled: !on || keys.indexOf(key) === -1 || keys.indexOf(key) >= keys.length - 1, onclick: () => P(b.id, (x) => { const i = x.columns.findIndex((c) => c.key === key); if (i !== -1 && i < x.columns.length - 1) { const [c] = x.columns.splice(i, 1); x.columns.splice(i + 1, 0, c); } }) }, "▼"));
+              wrap.appendChild(h("div", { class: "colrow" }, chk, label, width, align, mv));
+            });
+            add(wrap);
+            add(toggleControl("Header row", "the column labels above the items", b.header !== false, (v) => P(b.id, (x) => { if (v) delete x.header; else x.header = false; })));
+            add(toggleControl("Bold header", null, !(b.headerStyle && b.headerStyle.bold === false) && !!(b.headerStyle ? b.headerStyle.bold : true), (v) => P(b.id, (x) => { x.headerStyle = Object.assign({}, x.headerStyle || {}, { bold: v }); })));
+          }
+          section("Each item");
+          add(styleControls(() => b.rowStyle, (s) => P(b.id, (x) => { x.rowStyle = s; }), { align: false }));
+          add(toggleControl("Bold item names", null, !!(b.nameStyle && b.nameStyle.bold), (v) => P(b.id, (x) => { if (v) x.nameStyle = { bold: true }; else delete x.nameStyle; })));
+          add(toggleControl("Print item notes", "e.g. “(Note: less spicy)” under the item", !!b.showNotes, (v) => P(b.id, (x) => { x.showNotes = v; })));
+          add(toggleControl("Print the category", "under the item", !!b.showCategory, (v) => P(b.id, (x) => { x.showCategory = v; })));
+          add(toggleControl("Line between items", null, !!b.separator, (v) => P(b.id, (x) => { x.separator = v; })));
+          break;
+        }
+        case "charges":
+          section("Extra charges");
+          add(h("div", { class: "note" }, "One row per extra charge on the order (parcel, delivery…): the name on the left, the amount on the right. Prints nothing when the order has none."));
+          add(styleControls(() => b.style, (s) => P(b.id, (x) => { x.style = s; }), { align: false }));
+          break;
+        case "group":
+          section("Section");
+          add(textControl("Name", b.label, (v) => P(b.id, (x) => { x.label = v; }, "label:" + b.id), { tags: false }));
+          add(h("div", { class: "note" }, "A section is a folder: its blocks print or hide together, following the condition below. Drag blocks under it in the list, or use “Move into a section” on a block."));
+          break;
+        default:
+          break;
+      }
+
+      section("When to print");
+      add(conditionControls(b));
+      if (b.type === "text" || b.type === "row") {
+        add(toggleControl("Hide when empty", "skips the line when its fields have no value on the order", b.hideIfEmpty !== false, (v) => P(b.id, (x) => { if (v) delete x.hideIfEmpty; else x.hideIfEmpty = false; })));
+      }
+      add(toggleControl("Hidden", "kept in the layout, not printed", !!b.hidden, (v) => P(b.id, (x) => { if (v) x.hidden = true; else delete x.hidden; })));
+
+      section("Arrange");
+      add(arrangeControls(b, loc));
+    }
+
+    async function pickImage(id) {
+      const l = locate(id);
+      const res = await window.designer.pickImage((l && l.block.width) || 50);
+      if (!res || res.canceled) { renderInspector(); return; }
+      if (!res.ok) { setStatus(res.error || "Could not use that picture", "err"); renderInspector(); return; }
+      commit((t) => { const x = locate(id); if (x) x.block.src = res.dataUrl; });
+      setStatus("Picture added (" + (res.file || "image") + ") — it prints in black and white", "ok");
+    }
+
+    // ------------------------------------------------------------ top bar
+    function toggleMenu(id, anchorId) {
+      const m = $(id);
+      const open = m.hidden;
+      document.querySelectorAll(".menu").forEach((x) => { x.hidden = true; });
+      m.hidden = !open;
+    }
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".menuwrap")) document.querySelectorAll(".menu").forEach((x) => { x.hidden = true; });
+    });
+    $("addBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu("addMenu"); });
+    $("addMenu").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; $("addMenu").hidden = true; addBlock(b.dataset.type); });
+    $("testBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu("testMenu"); });
+    $("testMenu").addEventListener("click", async (e) => {
+      const b = e.target.closest("button");
+      if (!b || b.disabled) return;
+      $("testMenu").hidden = true;
+      setStatus("Printing test…");
+      const res = await window.designer.test(state.tpl, b.dataset.which);
+      setStatus(res.ok ? "Test sent to " + (res.message || "the bill printer") + " 🖨️" + (b.dataset.which === "last" && !res.usedLastBill ? " (no bill printed yet on this PC, used the sample)" : "") : "Test failed: " + (res.error || ""), res.ok ? "ok" : "err");
+    });
+    $("previewBtn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu("previewMenu"); });
+    $("previewMenu").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b || b.disabled) return; $("previewMenu").hidden = true; state.previewOrder = b.dataset.order; renderPreview(); });
+    document.querySelectorAll("#paperSeg button").forEach((b) => b.addEventListener("click", () => { state.paper = b.dataset.paper; render({ inspector: false }); }));
+    $("undoBtn").addEventListener("click", undo);
+    $("redoBtn").addEventListener("click", redo);
+    $("resetBtn").addEventListener("click", () => {
+      if (!confirm("Replace the whole layout with today's built-in bill? (You can undo.)")) return;
+      commit((t) => { const d = clone(BT.DEFAULT_TEMPLATE); t.blocks = d.blocks; t.paper = d.paper; state.sel = null; });
+      setStatus("Layout reset to today's bill — Save to keep it", "ok");
+    });
+    async function save() {
+      if (state.saving) return;
+      state.saving = true;
+      renderPill();
+      setStatus("Saving…");
+      const res = await window.designer.save(state.tpl);
+      state.saving = false;
+      if (res && res.ok) {
+        state.dirty = false;
+        state.status = res.status;
+        const st = res.status.sync || {};
+        const synced = st.state === "synced" && !res.status.pending;
+        setStatus(synced ? "Saved to your account ✓" : "Saved ✓", "ok");
+      } else {
+        state.status = (res && res.status) || state.status;
+        setStatus("Could not save: " + ((res && res.error) || "unknown error"), "err");
+      }
+      renderPill();
+    }
+    $("saveBtn").addEventListener("click", save);
+    $("closeBtn").addEventListener("click", () => {
+      if (state.dirty && !confirm("Close without saving? Your changes will be lost.")) return;
+      window.designer.close();
+    });
+    document.addEventListener("keydown", (e) => {
+      const inField = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || "");
+      if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "z") { if (!inField) { e.preventDefault(); undo(); } }
+      else if (e.ctrlKey && (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z"))) { if (!inField) { e.preventDefault(); redo(); } }
+      else if (e.ctrlKey && e.key.toLowerCase() === "s") { e.preventDefault(); save(); }
+      else if (e.key === "Delete" && !inField && state.sel) { e.preventDefault(); deleteBlock(state.sel); }
+      else if (e.key === "Escape") document.querySelectorAll(".menu").forEach((x) => { x.hidden = true; });
+    });
+
+    // ------------------------------------------------------------ init
+    window.designer.onStatus(async (s) => {
+      const before = state.status;
+      state.status = s;
+      renderPill();
+      // A sync just finished. If nothing is being edited here, follow the account.
+      if (before && before.sync && before.sync.state === "syncing" && s.sync.state !== "syncing" && !state.dirty && !state.saving) {
+        const fresh = await window.designer.get();
+        if (fresh.sample) { state.sample = fresh.sample; renderPreview(); }
+        if (fresh.template && JSON.stringify(fresh.template) !== JSON.stringify(state.tpl)) {
+          state.tpl = clone(fresh.template);
+          state.history = []; state.future = [];
+          if (state.sel && !locate(state.sel)) state.sel = null;
+          render();
+          setStatus("Layout updated from your account", "ok");
+        }
+        state.lastBill = fresh.lastBill || state.lastBill;
+        renderPill();
+      }
+    });
+    (async function init() {
+      const res = await window.designer.get();
+      state.status = res.status || {};
+      state.sample = res.sample || null;
+      state.lastBill = res.lastBill || null;
+      state.paper = state.status.activeType === "58mm" ? "58mm" : "80mm";
+      state.tpl = res.template ? clone(res.template) : clone(BT.DEFAULT_TEMPLATE);
+      render();
+      if (!res.template) setStatus("This is today's bill, block by block. Change anything, Test print, then Save.");
+      if (!res.sample || res.sample.sample_store) setStatus("Showing a sample store: your own store details appear after the app syncs with your account, or after the first bill prints on this PC.");
+    })();
+  </script>
+</body>
+</html>
