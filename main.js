@@ -659,6 +659,12 @@ const DEFAULT_PRINT_CONFIG = {
   billTemplateSyncedAt: null,
   billTemplatePending: false,
   billTemplateUpdatedAt: null,
+  // The kitchen ticket's layout, same lifecycle as the bill's (the one
+  // "Use Customized bill / kot" switch covers both).
+  kotTemplate: null,
+  kotTemplateSyncedAt: null,
+  kotTemplatePending: false,
+  kotTemplateUpdatedAt: null,
   // The dashboard's bill-logo URL, cached from the account so the designer can
   // preview a "store logo" block without a live order.
   billLogoUrl: null,
@@ -745,6 +751,11 @@ function loadPrintConfig() {
       if (typeof parsed.billTemplateSyncedAt === "string") cfg.billTemplateSyncedAt = parsed.billTemplateSyncedAt;
       if (typeof parsed.billTemplatePending === "boolean") cfg.billTemplatePending = parsed.billTemplatePending;
       if (typeof parsed.billTemplateUpdatedAt === "string") cfg.billTemplateUpdatedAt = parsed.billTemplateUpdatedAt;
+      const ktpl = BillTemplate.normalizeTemplate(parsed.kotTemplate);
+      if (ktpl) cfg.kotTemplate = ktpl;
+      if (typeof parsed.kotTemplateSyncedAt === "string") cfg.kotTemplateSyncedAt = parsed.kotTemplateSyncedAt;
+      if (typeof parsed.kotTemplatePending === "boolean") cfg.kotTemplatePending = parsed.kotTemplatePending;
+      if (typeof parsed.kotTemplateUpdatedAt === "string") cfg.kotTemplateUpdatedAt = parsed.kotTemplateUpdatedAt;
       if (typeof parsed.billLogoUrl === "string" && parsed.billLogoUrl.trim()) cfg.billLogoUrl = parsed.billLogoUrl.trim();
       const store = cleanStore(parsed.billStore);
       if (store) cfg.billStore = store;
@@ -757,6 +768,7 @@ function loadPrintConfig() {
     // The layout can be several KB (an embedded logo); log its size, not its body.
     log.info(`Print config loaded: ${JSON.stringify(Object.assign({}, cfg, {
       billTemplate: cfg.billTemplate ? `[${cfg.billTemplate.blocks.length} blocks]` : null,
+      kotTemplate: cfg.kotTemplate ? `[${cfg.kotTemplate.blocks.length} blocks]` : null,
     }))}`);
   } catch (e) {
     // Say WHY: this used to be silent, so a corrupt file looked like the
@@ -798,6 +810,12 @@ function savePrintConfig(incoming) {
   clean.billTemplatePending = (incoming && typeof incoming.billTemplatePending === "boolean")
     ? incoming.billTemplatePending : !!printConfig.billTemplatePending;
   clean.billTemplateUpdatedAt = has("billTemplateUpdatedAt") ? isoOrNull(incoming.billTemplateUpdatedAt) : printConfig.billTemplateUpdatedAt;
+  clean.kotTemplate = has("kotTemplate")
+    ? (BillTemplate.normalizeTemplate(incoming.kotTemplate) || null) : printConfig.kotTemplate;
+  clean.kotTemplateSyncedAt = has("kotTemplateSyncedAt") ? isoOrNull(incoming.kotTemplateSyncedAt) : printConfig.kotTemplateSyncedAt;
+  clean.kotTemplatePending = (incoming && typeof incoming.kotTemplatePending === "boolean")
+    ? incoming.kotTemplatePending : !!printConfig.kotTemplatePending;
+  clean.kotTemplateUpdatedAt = has("kotTemplateUpdatedAt") ? isoOrNull(incoming.kotTemplateUpdatedAt) : printConfig.kotTemplateUpdatedAt;
   clean.billLogoUrl = has("billLogoUrl")
     ? (typeof incoming.billLogoUrl === "string" && incoming.billLogoUrl.trim() ? incoming.billLogoUrl.trim() : null)
     : printConfig.billLogoUrl;
@@ -860,10 +878,10 @@ async function printTestSlip(which = "bill", opts = {}) {
     log.info(`Test print: ESC/POS text mode${opts.template ? " (draft layout)" : ""}`);
     const filename = "temp_printer_test.bin";
     const filePath = app.isPackaged ? path.join(process.resourcesPath, filename) : path.join(__dirname, filename);
-    const order = opts.order || SAMPLE_ORDER;
+    const order = opts.order || (isBill ? SAMPLE_ORDER : sampleKot("delivery"));
     const bytes = opts.template
       ? await buildTemplateEscPos(opts.template, order)
-      : await buildEscPosBill(order);
+      : (isBill ? await buildEscPosBill(order) : await buildEscPosKot(order));
     fs.writeFileSync(filePath, bytes);
     const exePath = app.isPackaged ? path.join(process.resourcesPath, "print-raw.exe") : path.join(__dirname, "print-raw.exe");
     await sendToPrinters(exePath, filePath, testTargets, `test-${which}`);
@@ -1183,9 +1201,17 @@ function apiBase() {
   return API_BASE_FALLBACK;
 }
 
-// The last bill this PC printed, kept in memory only, so a test print can use a
-// real order instead of the sample.
+// The last bill / KOT this PC printed, kept in memory only, so a test print can
+// use a real order instead of the sample.
 let lastBillPayload = null;
+let lastKotPayload = null;
+
+// The two documents share one lifecycle; these are their config keys.
+const DOC_KEYS = {
+  bill: { template: "billTemplate", pending: "billTemplatePending", syncedAt: "billTemplateSyncedAt", updatedAt: "billTemplateUpdatedAt", apiKey: "template", apiField: "template" },
+  kot: { template: "kotTemplate", pending: "kotTemplatePending", syncedAt: "kotTemplateSyncedAt", updatedAt: "kotTemplateUpdatedAt", apiKey: "kotTemplate", apiField: "kotTemplate" },
+};
+const docOf = (doc) => (doc === "kot" ? "kot" : "bill");
 let settingsWindow = null;
 let designerWindow = null;
 
@@ -1229,10 +1255,13 @@ function rememberStoreFromBill(bill) {
 }
 
 // The sample order the designer previews and test-prints: sample lines, the
-// partner's own store. Falls back to the built-in sample store until this PC
-// has synced with the account or printed a bill (then it says so).
-function sampleBill() {
-  const b = Object.assign({}, BillTemplate.SAMPLE_BILL, { generated_at: "" });
+// partner's own store. `kind` picks delivery (default), takeaway or dine_in so
+// the layout's conditions can be seen for each. Falls back to the built-in
+// sample store until this PC has synced with the account or printed a bill
+// (then it says so).
+function sampleBill(kind) {
+  const base = BillTemplate.SAMPLE_BILLS[kind] || BillTemplate.SAMPLE_BILL;
+  const b = Object.assign({}, base, { generated_at: "" });
   const st = printConfig.billStore;
   if (!st) {
     b.store_logo_url = printConfig.billLogoUrl || null;
@@ -1249,7 +1278,7 @@ function sampleBill() {
   b.currency = st.currency || b.currency;
   b.country = st.country || b.country;
   b.payment_upi_string = st.show_payment_qr && st.upi_id
-    ? `upi://pay?pa=${st.upi_id}&pn=${encodeURIComponent(st.store_name)}&am=598.50&cu=INR`
+    ? `upi://pay?pa=${st.upi_id}&pn=${encodeURIComponent(st.store_name)}&am=${Number(b.calculations.grand_total).toFixed(2)}&cu=INR`
     : null;
   b.bill_detail_url = st.bill_show_detail_qr ? b.bill_detail_url : null;
   b.store_logo_url = st.logo_url || printConfig.billLogoUrl || null;
@@ -1278,6 +1307,24 @@ async function buildEscPosBill(bill) {
   }
 }
 
+// The kitchen ticket: same rules as the bill, its own layout and fallback.
+function activeKotTemplate(order) {
+  if (!printConfig.billTemplateUseCustom) return null;
+  const fromPayload = order && order.kot_template ? BillTemplate.normalizeTemplate(order.kot_template) : null;
+  return fromPayload || printConfig.kotTemplate || null;
+}
+
+async function buildEscPosKot(order) {
+  const tpl = activeKotTemplate(order);
+  if (!tpl) return convertOrderToEscPos(order);
+  try {
+    return await buildTemplateEscPos(tpl, order);
+  } catch (e) {
+    log.error("Custom KOT layout failed; printing the built-in ticket instead", e);
+    return convertOrderToEscPos(order);
+  }
+}
+
 async function buildTemplateEscPos(tpl, bill) {
   const cols = escposCharsPerLine();
   const lines = BillTemplate.resolveBill(tpl, bill, { paper: printConfig.activeType });
@@ -1289,14 +1336,21 @@ async function buildTemplateEscPos(tpl, bill) {
 // A payload that carries the account's layout keeps this PC's copy current even
 // when the API is unreachable — but never over a local save still waiting to be
 // pushed, which is the newer of the two.
-function adoptPayloadTemplate(raw) {
-  if (raw === undefined || raw === null || printConfig.billTemplatePending) return;
+function adoptPayloadTemplate(raw, doc) {
+  const k = DOC_KEYS[docOf(doc)];
+  if (raw === undefined || raw === null || printConfig[k.pending]) return;
   const tpl = BillTemplate.normalizeTemplate(raw);
   if (!tpl) return;
-  if (JSON.stringify(tpl) === JSON.stringify(printConfig.billTemplate)) return;
-  log.info("Bill layout updated from the print payload");
-  savePrintConfig({ ...printConfig, billTemplate: tpl, billTemplatePending: false, billTemplateSyncedAt: new Date().toISOString() });
+  if (JSON.stringify(tpl) === JSON.stringify(printConfig[k.template])) return;
+  log.info(`${docOf(doc) === "kot" ? "KOT" : "Bill"} layout updated from the print payload`);
+  savePrintConfig({ ...printConfig, [k.template]: tpl, [k.pending]: false, [k.syncedAt]: new Date().toISOString() });
   broadcastTemplateStatus();
+}
+
+// The kitchen ticket's sample order (no store details: the KOT payload has none).
+function sampleKot(kind) {
+  const base = BillTemplate.SAMPLE_KOTS[kind] || BillTemplate.SAMPLE_KOTS.delivery;
+  return Object.assign({}, base, { generated_at: "" });
 }
 
 // --- images on the ESC/POS path ---
@@ -1420,8 +1474,17 @@ function setSyncState(state, message) {
 
 function templateStatus() {
   const tpl = printConfig.billTemplate;
+  const ktpl = printConfig.kotTemplate;
   return {
     storeName: printConfig.billStore ? printConfig.billStore.store_name : null,
+    kot: {
+      hasTemplate: !!ktpl,
+      blocks: ktpl ? ktpl.blocks.length : 0,
+      pending: !!printConfig.kotTemplatePending,
+      syncedAt: printConfig.kotTemplateSyncedAt,
+      updatedAt: printConfig.kotTemplateUpdatedAt,
+      hasLast: !!lastKotPayload,
+    },
     hasTemplate: !!tpl,
     blocks: tpl ? tpl.blocks.length : 0,
     useCustom: !!printConfig.billTemplateUseCustom,
@@ -1452,14 +1515,20 @@ function describeSyncFailure(r) {
 }
 
 async function pushBillTemplate() {
-  const r = await apiRequest("PUT", BILL_TEMPLATE_API, { template: printConfig.billTemplate });
+  // Whatever this PC has goes up: the bill layout, the KOT layout, or both.
+  const body = {};
+  if (printConfig.billTemplate) body.template = printConfig.billTemplate;
+  if (printConfig.kotTemplate) body.kotTemplate = printConfig.kotTemplate;
+  if (!Object.keys(body).length) { setSyncState("synced", "Nothing to send"); return true; }
+  const r = await apiRequest("PUT", BILL_TEMPLATE_API, body);
   if (r.ok && r.json.ok) {
-    savePrintConfig(Object.assign({}, printConfig, {
-      billTemplatePending: false,
-      billTemplateSyncedAt: new Date().toISOString(),
-      billTemplateUpdatedAt: typeof r.json.updatedAt === "string" ? r.json.updatedAt : printConfig.billTemplateUpdatedAt,
-    }, r.json.logoUrl !== undefined ? { billLogoUrl: r.json.logoUrl || null } : {},
-       cleanStore(r.json.store) ? { billStore: cleanStore(r.json.store) } : {}));
+    const now = new Date().toISOString();
+    const stamp = typeof r.json.updatedAt === "string" ? r.json.updatedAt : null;
+    savePrintConfig(Object.assign({}, printConfig,
+      body.template ? { billTemplatePending: false, billTemplateSyncedAt: now, billTemplateUpdatedAt: stamp || printConfig.billTemplateUpdatedAt } : {},
+      body.kotTemplate ? { kotTemplatePending: false, kotTemplateSyncedAt: now, kotTemplateUpdatedAt: stamp || printConfig.kotTemplateUpdatedAt } : {},
+      r.json.logoUrl !== undefined ? { billLogoUrl: r.json.logoUrl || null } : {},
+      cleanStore(r.json.store) ? { billStore: cleanStore(r.json.store) } : {}));
     setSyncState("synced", "Saved to your account");
     return true;
   }
@@ -1478,21 +1547,27 @@ async function pullBillTemplate() {
   const updates = {};
   if (r.json.logoUrl !== undefined) updates.billLogoUrl = r.json.logoUrl || null;
   if (cleanStore(r.json.store)) updates.billStore = cleanStore(r.json.store);
+  const now = new Date().toISOString();
+  const stamp = typeof r.json.updatedAt === "string" ? r.json.updatedAt : null;
   const tpl = BillTemplate.normalizeTemplate(r.json.template);
   if (tpl) {
     updates.billTemplate = tpl;
     updates.billTemplatePending = false;
-    updates.billTemplateSyncedAt = new Date().toISOString();
-    updates.billTemplateUpdatedAt = typeof r.json.updatedAt === "string" ? r.json.updatedAt : printConfig.billTemplateUpdatedAt;
-    savePrintConfig(Object.assign({}, printConfig, updates));
-    setSyncState("synced", "Up to date with your account");
-    return true;
+    updates.billTemplateSyncedAt = now;
+    updates.billTemplateUpdatedAt = stamp || printConfig.billTemplateUpdatedAt;
+  }
+  const ktpl = BillTemplate.normalizeTemplate(r.json.kotTemplate);
+  if (ktpl) {
+    updates.kotTemplate = ktpl;
+    updates.kotTemplatePending = false;
+    updates.kotTemplateSyncedAt = now;
+    updates.kotTemplateUpdatedAt = stamp || printConfig.kotTemplateUpdatedAt;
   }
   savePrintConfig(Object.assign({}, printConfig, updates));
   // This PC has a layout the account does not (saved before sync existed, or
   // while offline): send it up rather than throw it away.
-  if (printConfig.billTemplate) return pushBillTemplate();
-  setSyncState("synced", "No custom layout yet");
+  if ((printConfig.billTemplate && !tpl) || (printConfig.kotTemplate && !ktpl)) return pushBillTemplate();
+  setSyncState("synced", tpl || ktpl ? "Up to date with your account" : "No custom layout yet");
   return true;
 }
 
@@ -1504,7 +1579,8 @@ function syncBillTemplate(reason) {
   broadcastTemplateStatus();
   syncInFlight = (async () => {
     try {
-      if (printConfig.billTemplatePending && printConfig.billTemplate) await pushBillTemplate();
+      const pending = (printConfig.billTemplatePending && printConfig.billTemplate) || (printConfig.kotTemplatePending && printConfig.kotTemplate);
+      if (pending) await pushBillTemplate();
       else await pullBillTemplate();
     } catch (e) {
       setSyncState("offline", e.message);
@@ -1518,15 +1594,17 @@ function syncBillTemplate(reason) {
 }
 
 // --- BILL LAYOUT WINDOW (designer.html) ---
-function openDesignerWindow() {
+function openDesignerWindow(doc) {
+  doc = docOf(doc);
   if (designerWindow && !designerWindow.isDestroyed()) {
     designerWindow.show();
     designerWindow.focus();
+    try { designerWindow.webContents.send("designer:doc", doc); } catch (e) { /* closing */ }
     return;
   }
   designerWindow = new BrowserWindow({
-    width: 1120,
-    height: 780,
+    width: 1280,
+    height: 800,
     minWidth: 940,
     minHeight: 600,
     title: "Bill Layout",
@@ -1539,7 +1617,7 @@ function openDesignerWindow() {
     },
   });
   designerWindow.setMenuBarVisibility(false);
-  designerWindow.loadFile(path.join(__dirname, "designer.html"));
+  designerWindow.loadFile(path.join(__dirname, "designer.html"), { query: { doc } });
   designerWindow.on("closed", () => { designerWindow = null; });
   // A fresh copy from the account whenever the window opens (a local save still
   // waiting goes up first), so two PCs and the Menuthere team see one layout.
@@ -1637,8 +1715,11 @@ function createWindow() {
               log.info(`Received ${isBill ? "Bill" : "KOT"} JSON:`, orderData.id, `[timing] payload@${since()}`);
               if (isBill) {
                 lastBillPayload = orderData;
-                adoptPayloadTemplate(orderData.bill_template);
+                adoptPayloadTemplate(orderData.bill_template, "bill");
                 rememberStoreFromBill(orderData);
+              } else {
+                lastKotPayload = orderData;
+                adoptPayloadTemplate(orderData.kot_template, "kot");
               }
 
               // Layout + Full Arabic are now chosen in the web dashboard and travel in
@@ -1660,14 +1741,14 @@ function createWindow() {
                   if (fullArabic || receiptHasUnprintable(orderData, isBill)) {
                       log.warn("ESC/POS mode: non-ASCII text (e.g. Arabic) cannot be rendered by the printer font and will be dropped - switch to Raster to print it");
                   }
-                  const customLayout = isBill ? activeBillTemplate(orderData) : null;
+                  const customLayout = isBill ? activeBillTemplate(orderData) : activeKotTemplate(orderData);
                   if (isBill && orderData.bill_logo_url && !customLayout) {
                       log.warn("ESC/POS mode: bill logo skipped (images need Raster mode, or a custom bill layout with a logo block)");
                   }
-                  log.info(`Using ESC/POS text print (${customLayout ? "custom bill layout" : "default layout"})`);
+                  log.info(`Using ESC/POS text print (${customLayout ? "custom " + (isBill ? "bill" : "KOT") + " layout" : "default layout"})`);
                   escPosBuffer = isBill
                       ? await buildEscPosBill(orderData)
-                      : convertOrderToEscPos(orderData);
+                      : await buildEscPosKot(orderData);
               } else if (isBill && isCustomBillLayout(layout)) {
                   if (webRendered) {
                       // The live /bill page already rendered this layout — capture it as-is.
@@ -2002,7 +2083,8 @@ function buildAppMenu() {
       label: "Printer",
       submenu: [
         { label: "Printer Settings…", accelerator: "CmdOrCtrl+Shift+P", click: () => openSettingsWindow() },
-        { label: "Bill Layout…", accelerator: "CmdOrCtrl+Shift+L", click: () => openDesignerWindow() },
+        { label: "Bill Layout…", accelerator: "CmdOrCtrl+Shift+L", click: () => openDesignerWindow("bill") },
+        { label: "KOT Layout…", click: () => openDesignerWindow("kot") },
         { label: "Test Print", click: () => { printTestSlip().catch((e) => log.warn("Test print failed:", e.message)); } },
         { type: "separator" },
         { role: "reload" },
@@ -2029,7 +2111,8 @@ function refreshTrayMenu() {
   if (!tray || tray.isDestroyed()) return;
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "Printer Settings", click: () => openSettingsWindow() },
-    { label: "Bill Layout", click: () => openDesignerWindow() },
+    { label: "Bill Layout", click: () => openDesignerWindow("bill") },
+    { label: "KOT Layout", click: () => openDesignerWindow("kot") },
     { label: "Test sound", click: () => testOrderSound() },
     {
       label: "Mute new-order sound",
@@ -2127,19 +2210,26 @@ ipcMain.on("settings:close", () => {
 });
 
 // --- Bill layout IPC (settings.html + designer.html) ---
-ipcMain.handle("bill-template:get", () => ({
-  template: printConfig.billTemplate,
-  status: templateStatus(),
-  lastBill: lastBillPayload,
-  sample: sampleBill(),
-}));
+ipcMain.handle("bill-template:get", (_e, args) => {
+  const doc = docOf(args && args.doc);
+  const sample = doc === "kot" ? sampleKot : sampleBill;
+  return {
+    doc,
+    template: printConfig[DOC_KEYS[doc].template],
+    status: templateStatus(),
+    lastBill: doc === "kot" ? lastKotPayload : lastBillPayload,
+    sample: sample("delivery"),
+    samples: { delivery: sample("delivery"), takeaway: sample("takeaway"), dine_in: sample("dine_in") },
+  };
+});
 ipcMain.handle("bill-template:status", () => templateStatus());
 ipcMain.handle("bill-template:sync", () => syncBillTemplate("refresh"));
-ipcMain.handle("bill-template:save", async (_e, raw) => {
+ipcMain.handle("bill-template:save", async (_e, raw, docArg) => {
+  const k = DOC_KEYS[docOf(docArg)];
   const tpl = BillTemplate.normalizeTemplate(raw);
   if (!tpl) return { ok: false, error: "That layout could not be read", status: templateStatus() };
   // Local first — the layout is safe on this PC even if the push fails.
-  savePrintConfig({ ...printConfig, billTemplate: tpl, billTemplatePending: true, billTemplateUpdatedAt: new Date().toISOString() });
+  savePrintConfig({ ...printConfig, [k.template]: tpl, [k.pending]: true, [k.updatedAt]: new Date().toISOString() });
   broadcastTemplateStatus();
   await syncBillTemplate("saved");
   return { ok: true, status: templateStatus() };
@@ -2154,10 +2244,16 @@ ipcMain.handle("bill-template:use-custom", (_e, on) => {
 // mode is set to — the window says so when the mode is Raster.
 ipcMain.handle("bill-template:test", async (_e, args) => {
   try {
-    const tpl = BillTemplate.normalizeTemplate(args && args.template) || printConfig.billTemplate || BillTemplate.DEFAULT_TEMPLATE;
-    const useLast = !!(args && args.which === "last" && lastBillPayload);
-    const order = useLast ? lastBillPayload : sampleBill();
-    const out = await printTestSlip("bill", { template: tpl, order, escpos: true });
+    const doc = docOf(args && args.doc);
+    const isKot = doc === "kot";
+    const tpl = BillTemplate.normalizeTemplate(args && args.template)
+      || printConfig[DOC_KEYS[doc].template]
+      || (isKot ? BillTemplate.DEFAULT_KOT_TEMPLATE : BillTemplate.DEFAULT_TEMPLATE);
+    const last = isKot ? lastKotPayload : lastBillPayload;
+    const useLast = !!(args && args.which === "last" && last);
+    const kind = args && BillTemplate.SAMPLE_BILLS[args.which] ? args.which : "delivery";
+    const order = useLast ? last : (isKot ? sampleKot(kind) : sampleBill(kind));
+    const out = await printTestSlip(isKot ? "kot" : "bill", { template: tpl, order, escpos: true });
     return { ok: true, message: String(out || "").trim(), usedLastBill: useLast };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -2188,7 +2284,7 @@ ipcMain.handle("bill-template:fetch-image", async (_e, url) => {
   const w = img.getSize().width || 576;
   return { ok: true, dataUrl: toMonoPngDataUrl(img, Math.min(576, w)) };
 });
-ipcMain.on("designer:open", () => openDesignerWindow());
+ipcMain.on("designer:open", (_e, doc) => openDesignerWindow(doc));
 ipcMain.on("designer:close", () => {
   if (designerWindow && !designerWindow.isDestroyed()) designerWindow.close();
 });

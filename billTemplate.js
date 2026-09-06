@@ -113,7 +113,8 @@
   // never count as content for "hide when empty" (a line that only has a
   // currency symbol on it is still empty).
   const calc = (b) => (b && b.calculations) || null;
-  const items = (b) => (b && Array.isArray(b.order_items) ? b.order_items : []);
+  // The bill payload carries `order_items`, the KOT payload `items`.
+  const items = (b) => (b && Array.isArray(b.order_items) ? b.order_items : (b && Array.isArray(b.items) ? b.items : []));
   const charges = (b) => (b && Array.isArray(b.extra_charges) ? b.extra_charges : []);
   const chargesTotal = (b) => charges(b).reduce((s, c) => s + (parseFloat(c && c.price) || 0), 0);
 
@@ -319,6 +320,14 @@
   function resolveBill(template, bill, opts) {
     opts = opts || {};
     const tpl = template && template.blocks ? template : DEFAULT_TEMPLATE;
+    // "Per order type": each kind of order has its own list of blocks. An order
+    // of an unknown kind, or a kind with no layout, prints the shared one.
+    let blocks = tpl.blocks;
+    if (tpl.perType && tpl.variants) {
+      const kind = orderTypeKey(bill && bill.type) || "delivery";
+      const v = tpl.variants[kind];
+      if (v && Array.isArray(v.blocks)) blocks = v.blocks;
+    }
     const ctx = {
       bill: bill || {},
       sanitize: opts.sanitize || sanitizeForPrinter,
@@ -327,7 +336,7 @@
       item: null,
     };
     const out = [];
-    walkBlocks(tpl.blocks, ctx, out, null, null);
+    walkBlocks(blocks, ctx, out, null, null);
     collapseRules(out);
     const paper = tpl.paper || {};
     const feed = clampInt(paper.feedLines, 0, 10, 3);
@@ -490,13 +499,18 @@
       });
       return;
     }
-    // inline: "<format> ........ <amount>" — the format wraps, the amount sits on its last line.
+    // inline: "<format> ........ <amount>" — the format wraps, the amount sits on
+    // its last line. With showAmount off (a kitchen ticket) it is just the text.
     const format = str(bk.format) || "{qty} x {name}";
     sample.forEach((it, idx) => {
       ctx.item = it;
       const left = resolveText(format, ctx, nameStyle ? Object.assign({}, rowStyle, nameStyle) : rowStyle).segs;
-      const amount = fillSegs([{ v: "{amount}" }], ctx, rowStyle).segs;
-      emit({ t: "row", cells: [{ segs: left, align: "left", width: "flex" }, { segs: amount, align: "right", width: null }] });
+      if (bk.showAmount === false) {
+        emit({ t: "text", align: "left", segs: left, wrap: true });
+      } else {
+        const amount = fillSegs([{ v: "{amount}" }], ctx, rowStyle).segs;
+        emit({ t: "row", cells: [{ segs: left, align: "left", width: "flex" }, { segs: amount, align: "right", width: null }] });
+      }
       itemExtras(bk, it, ctx, emit);
       if (bk.separator && idx < sample.length - 1) emit({ t: "rule", ch: "-" });
       ctx.item = null;
@@ -510,6 +524,7 @@
     if (bk.showCategory && it && it.category) {
       emit({ t: "text", align: "left", segs: fillSegs([{ v: "  " + str(it.category) }], ctx, null).segs, wrap: true });
     }
+    if (bk.gapAfter) emit({ t: "feed", n: 1 });
   }
 
   function normalizeColumns(cols) {
@@ -1012,6 +1027,8 @@
         if (raw.showNotes) b.showNotes = true;
         if (raw.showCategory) b.showCategory = true;
         if (raw.separator) b.separator = true;
+        if (raw.showAmount === false) b.showAmount = false;
+        if (raw.gapAfter) b.gapAfter = true;
         break;
       case "charges":
         if (normalizeStyle(raw.style)) b.style = normalizeStyle(raw.style);
@@ -1042,22 +1059,41 @@
     }
     if (!raw || typeof raw !== "object" || !Array.isArray(raw.blocks)) return null;
     if (raw.v != null && Number(raw.v) !== VERSION) return null;
-    const seen = {};
-    const blocks = [];
-    let count = 0;
-    for (const rb of raw.blocks) {
-      if (count >= MAX_BLOCKS) break;
-      const nb = normalizeBlock(rb, seen, 0);
-      if (!nb) continue;
-      blocks.push(nb);
-      count += 1 + (nb.blocks ? nb.blocks.length : 0);
-    }
+    const normalizeList = (list) => {
+      const seen = {};
+      const blocks = [];
+      let count = 0;
+      for (const rb of list) {
+        if (count >= MAX_BLOCKS) break;
+        const nb = normalizeBlock(rb, seen, 0);
+        if (!nb) continue;
+        blocks.push(nb);
+        count += 1 + (nb.blocks ? nb.blocks.length : 0);
+      }
+      return blocks;
+    };
+    const blocks = normalizeList(raw.blocks);
     const paper = raw.paper && typeof raw.paper === "object" ? raw.paper : {};
-    return {
+    const out = {
       v: VERSION,
       paper: { feedLines: clampInt(paper.feedLines, 0, 10, 3), cut: paper.cut !== false },
       blocks,
     };
+    // Separate layouts per kind of order (delivery / takeaway / dine_in).
+    let variants = null;
+    if (raw.variants && typeof raw.variants === "object") {
+      ORDER_TYPES.forEach((k) => {
+        const v = raw.variants[k];
+        if (v && Array.isArray(v.blocks)) (variants = variants || {})[k] = { blocks: normalizeList(v.blocks) };
+      });
+    }
+    if (raw.perType) {
+      variants = variants || {};
+      ORDER_TYPES.forEach((k) => { if (!variants[k]) variants[k] = { blocks: JSON.parse(JSON.stringify(blocks)) }; });
+      out.perType = true;
+    }
+    if (variants) out.variants = variants;
+    return out;
   }
 
   function newBlock(type) {
@@ -1092,7 +1128,7 @@
         const names = { bill_detail: "Online bill", upi: "UPI payment", delivery_location: "Delivery location", custom: "Custom" };
         return (names[b.source] || "QR") + (b.caption ? " · “" + b.caption + "”" : "");
       }
-      case "items": return b.layout === "columns" ? "Columns: " + (b.columns || DEFAULT_COLUMNS).map((c) => c.label).join(" · ") : (b.format || "{qty} x {name}") + " · amount right";
+      case "items": return b.layout === "columns" ? "Columns: " + (b.columns || DEFAULT_COLUMNS).map((c) => c.label).join(" · ") : (b.format || "{qty} x {name}") + (b.showAmount === false ? "" : " · amount right");
       case "charges": return "One row per extra charge";
       case "group": return b.label || "Section";
       default: return b.type;
@@ -1106,7 +1142,7 @@
     v: 1,
     paper: { feedLines: 3, cut: true },
     blocks: [
-      { id: "logo", type: "image", src: "logo", width: 50, hidden: true },
+      { id: "logo", type: "image", src: "logo", width: 50 },
       { id: "name", type: "text", text: "{store_name}", style: { align: "center", bold: true } },
       { id: "addr", type: "text", text: "{address}", style: { align: "center" } },
       { id: "tel", type: "text", text: "Tel: {phone}", style: { align: "center" } },
@@ -1164,12 +1200,42 @@
     ],
   };
 
+  // Today's kitchen ticket, block by block (convertOrderToEscPos in main.js);
+  // check-template-default.js proves the match.
+  const DEFAULT_KOT_TEMPLATE = {
+    v: 1,
+    paper: { feedLines: 3, cut: true },
+    blocks: [
+      { id: "khead", type: "text", text: "KITCHEN ORDER TICKET", style: { align: "center", bold: true } },
+      { id: "kr1", type: "rule" },
+      { id: "ktable", type: "group", label: "Table", when: { has: "table" }, blocks: [
+        { id: "kt1", type: "text", text: "{table}", style: { align: "center", bold: true } },
+        { id: "kt2", type: "rule" },
+      ] },
+      { id: "kord", type: "text", text: "Order: #{order_id}" },
+      { id: "ktype", type: "text", text: "Type : {order_type}" },
+      { id: "ktime", type: "text", text: "Time : {time}" },
+      { id: "knotes", type: "group", label: "Order notes", when: { has: "notes" }, blocks: [
+        { id: "kn0", type: "space", lines: 1 },
+        { id: "kn1", type: "text", text: "Order Notes:", style: { bold: true } },
+        { id: "kn2", type: "text", text: "{notes}" },
+      ] },
+      { id: "kr2", type: "rule" },
+      { id: "kih", type: "text", text: "ITEMS:", style: { bold: true } },
+      { id: "kitems", type: "items", layout: "inline", format: "{qty} x {name}", showAmount: false, showNotes: true, gapAfter: true, rowStyle: { bold: true } },
+      { id: "kr3", type: "rule" },
+      { id: "kgen", type: "text", text: "Generated at: {generated_at}", style: { align: "center" } },
+      { id: "ksp", type: "space", lines: 1 },
+      { id: "kpow", type: "text", text: "Powered By Menuthere", style: { align: "center" } },
+    ],
+  };
+
   // A realistic delivery order for the preview and test prints: it has a
   // customer, a rider, a discount, tax, an extra charge and all three QR sources,
   // so every block of the default layout is exercised.
   const SAMPLE_BILL = {
     id: "a1b2c3d4-5e6f-7890-abcd-ef1234567890",
-    display_id: "42",
+    display_id: "42-06/09/2026", // as the /bill page sends it: number-date, or the short id
     created_at: "06/09/2026",
     time: "13:40",
     store_name: "Mehroo Kitchen",
@@ -1204,10 +1270,57 @@
     show_powered_by_cravings: true,
   };
 
+  // The same sample as a takeaway and as a dine-in order, so a layout's
+  // conditions (customer details, rider, table) can be checked for each kind
+  // of order. `type` strings are what the /bill page emits for each.
+  const SAMPLE_BILL_TAKEAWAY = Object.assign({}, SAMPLE_BILL, {
+    id: "b2c3d4e5-6f70-8192-a3b4-c5d6e7f80912",
+    display_id: "43-06/09/2026",
+    type: "Takeaway",
+    payment_method: "upi",
+    notes: "Extra napkins please",
+    delivery_address: "",
+    delivery_location: null,
+    delivery_boy: null,
+    extra_charges: [{ name: "Parcel", price: 20 }],
+    calculations: { food_subtotal: 590, charges_subtotal: 20, discount_amount: 50, subtotal: 610, gst_percentage: 5, gst_amount: 28.5, grand_total: 588.5 },
+    payment_upi_string: "upi://pay?pa=mehroo@upi&pn=Mehroo%20Kitchen&am=588.50&cu=INR",
+    bill_detail_url: "https://menuthere.com/bill/b2c3d4e5-6f70-8192-a3b4-c5d6e7f80912?print=false",
+  });
+  const SAMPLE_BILL_DINE_IN = Object.assign({}, SAMPLE_BILL, {
+    id: "c3d4e5f6-7081-92a3-b4c5-d6e7f8091a23",
+    display_id: "44-06/09/2026",
+    type: " Table 5",
+    table_number: 5,
+    table_name: null,
+    payment_method: "cash",
+    notes: "Birthday table, cake last",
+    customer_name: null,
+    customer_phone: null,
+    delivery_address: "",
+    delivery_location: null,
+    delivery_boy: null,
+    extra_charges: [],
+    calculations: { food_subtotal: 590, charges_subtotal: 0, discount_amount: 50, subtotal: 590, gst_percentage: 5, gst_amount: 28.5, grand_total: 568.5 },
+    payment_upi_string: "upi://pay?pa=mehroo@upi&pn=Mehroo%20Kitchen&am=568.50&cu=INR",
+    bill_detail_url: "https://menuthere.com/bill/c3d4e5f6-7081-92a3-b4c5-d6e7f8091a23?print=false",
+  });
+  const SAMPLE_BILLS = { delivery: SAMPLE_BILL, takeaway: SAMPLE_BILL_TAKEAWAY, dine_in: SAMPLE_BILL_DINE_IN };
+
+  // The same orders as the kitchen sees them: the /kot payload carries only the
+  // order, its table and its items (with the kitchen note per item).
+  const toKot = (b) => ({
+    id: b.id, display_id: b.display_id, created_at: b.created_at, time: b.time,
+    table_number: b.table_number, table_name: b.table_name, type: b.type, notes: b.notes,
+    items: b.order_items.map((it, i) => Object.assign({}, it, i === 0 ? { notes: "less spicy" } : {})),
+    generated_at: b.generated_at,
+  });
+  const SAMPLE_KOTS = { delivery: toKot(SAMPLE_BILL), takeaway: toKot(SAMPLE_BILL_TAKEAWAY), dine_in: toKot(SAMPLE_BILL_DINE_IN) };
+
   return {
     VERSION, SIZES, ALIGNS, BLOCK_TYPES, QR_SOURCES, QR_SIZES, IMAGE_WIDTHS, ORDER_TYPES, ITEM_COLUMN_KEYS,
     FIELDS, ITEM_FIELDS, WHEN_FIELDS, TYPE_LABELS, DEFAULT_COLUMNS,
-    DEFAULT_TEMPLATE, SAMPLE_BILL,
+    DEFAULT_TEMPLATE, DEFAULT_KOT_TEMPLATE, SAMPLE_BILL, SAMPLE_BILLS, SAMPLE_KOTS,
     sanitizeForPrinter, to12Hour, generatedStamp, orderTypeKey, hasValue, evalWhen,
     parseMarkup, resolveBill, fitLines, physToEscPos, physToHtml, escposQr, qrModule, qrGeometry, qrModulesFor,
     normalizeTemplate, newBlock, summarizeBlock, uid,

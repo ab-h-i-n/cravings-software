@@ -30,14 +30,14 @@ function loadLegacy(activeType) {
     console,
   };
   vm.createContext(sandbox);
-  vm.runInContext(code + "\nthis.convertBillToEscPos = convertBillToEscPos;", sandbox);
-  return sandbox.convertBillToEscPos;
+  vm.runInContext(code + "\nthis.convertBillToEscPos = convertBillToEscPos; this.convertOrderToEscPos = convertOrderToEscPos;", sandbox);
+  return { bill: sandbox.convertBillToEscPos, kot: sandbox.convertOrderToEscPos };
 }
 
 // ---------------------------------------------------------------- engine
-function renderTemplate(bill, activeType) {
+function renderTemplate(bill, activeType, template) {
   const cols = activeType === "58mm" ? 32 : 48;
-  const lines = BillTemplate.resolveBill(BillTemplate.DEFAULT_TEMPLATE, bill, { paper: activeType });
+  const lines = BillTemplate.resolveBill(template || BillTemplate.DEFAULT_TEMPLATE, bill, { paper: activeType });
   const phys = BillTemplate.fitLines(lines, cols);
   return Buffer.from(BillTemplate.physToEscPos(phys, { paper: activeType }), "latin1");
 }
@@ -158,6 +158,23 @@ add("very long notes (now wrapped at spaces instead of by the printer)", (b) => 
 }, true);
 add("wide date and time on 58 mm", (b) => { b.created_at = "06/09/2026"; b.time = "23:59"; });
 
+// ---- KOT variants (convertOrderToEscPos vs DEFAULT_KOT_TEMPLATE)
+const kotVariants = [];
+const addKot = (name, mutate, expectDiff) => {
+  const k = clone(BillTemplate.SAMPLE_KOTS.delivery);
+  mutate(k);
+  kotVariants.push({ name, bill: k, expectDiff: !!expectDiff });
+};
+addKot("kot delivery: notes + item note", () => {});
+addKot("kot takeaway", (k) => { Object.assign(k, clone(BillTemplate.SAMPLE_KOTS.takeaway)); });
+addKot("kot no notes at all", (k) => { k.notes = ""; k.items.forEach((it) => { delete it.notes; }); });
+addKot("kot dine-in: table", (k) => { Object.assign(k, clone(BillTemplate.SAMPLE_KOTS.dine_in)); });
+addKot("kot named table, long item name", (k) => { k.type = " Table Garden"; k.table_number = 0; k.table_name = "Garden 2"; k.items[1].name = "Extra Large Family Pack Chicken Biryani with Raita and Salad"; });
+addKot("kot no time", (k) => { k.time = ""; });
+addKot("kot numeric display id (legacy prints an ID line the web never triggers)", (k) => { k.display_id = "7"; }, true);
+addKot("kot no items (legacy prints 'No items found.')", (k) => { k.items = []; }, true);
+addKot("kot very long notes (now wrapped at spaces)", (k) => { k.notes = "Please pack the biryani separately from the raita and add extra napkins for the office order"; }, true);
+
 // ---------------------------------------------------------------- compare
 function describe(ev) {
   if (ev.k === "line") return `line a${ev.align} ` + ev.runs.map((r) => `[${r.b ? "B" : ""}${r.s ? "S" + r.s : ""}${r.u ? "U" : ""}${r.i ? "I" : ""}]"${r.t}"`).join("");
@@ -170,10 +187,11 @@ let failures = 0;
 let expected = 0;
 for (const activeType of ["80mm", "58mm"]) {
   const legacy = loadLegacy(activeType);
-  for (const v of variants) {
+  const all = variants.map((v) => Object.assign({ doc: "bill" }, v)).concat(kotVariants.map((v) => Object.assign({ doc: "kot" }, v)));
+  for (const v of all) {
     const cols = activeType === "58mm" ? 32 : 48;
-    const a = parseEscPos(legacy(clone(v.bill)), cols);
-    const b = parseEscPos(renderTemplate(clone(v.bill), activeType), cols);
+    const a = parseEscPos((v.doc === "kot" ? legacy.kot : legacy.bill)(clone(v.bill)), cols);
+    const b = parseEscPos(renderTemplate(clone(v.bill), activeType, v.doc === "kot" ? BillTemplate.DEFAULT_KOT_TEMPLATE : BillTemplate.DEFAULT_TEMPLATE), cols);
     const n = Math.max(a.length, b.length);
     let firstDiff = -1;
     for (let i = 0; i < n; i++) {

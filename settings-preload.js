@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld("printSettings", {
   layoutStatus: () => ipcRenderer.invoke("bill-template:status"),
   layoutUseCustom: (on) => ipcRenderer.invoke("bill-template:use-custom", on),
   layoutSync: () => ipcRenderer.invoke("bill-template:sync"),
-  layoutTest: () => ipcRenderer.invoke("bill-template:test", { which: "sample" }),
-  openDesigner: () => ipcRenderer.send("designer:open"),
+  layoutTest: (doc) => ipcRenderer.invoke("bill-template:test", { which: "sample", doc }),
+  openDesigner: (doc) => ipcRenderer.send("designer:open", doc),
   onLayoutStatus: (cb) => ipcRenderer.on("bill-template:status", (_e, status) => cb(status)),
 });
