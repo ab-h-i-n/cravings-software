@@ -108,6 +108,13 @@
     .in, .ta { font-family:Consolas,"Courier New",monospace; font-size:12px; }
     .ta { resize:vertical; min-height:44px; }
     .in:focus, .ta:focus, .slct:focus, .num:focus { outline:2px solid var(--accent); outline-offset:-1px; border-color:var(--accent); }
+    .range { width:100%; accent-color:var(--accent); margin:2px 0 0; }
+    .rangehead { display:flex; justify-content:space-between; align-items:baseline; }
+    .rangehead label { font-size:11.5px; color:var(--muted); }
+    .rangeval { font-size:12px; color:var(--ink); font-variant-numeric:tabular-nums; }
+    .bk.endrow { margin-top:8px; border-top:1px dashed var(--line2); border-radius:0 0 6px 6px; padding-top:8px; }
+    .bk.endrow .ty { color:var(--muted); }
+    .paper .pl.cut.sel { outline:2px solid var(--accent); outline-offset:1px; }
     .toolbar { display:flex; gap:4px; margin:4px 0 2px; flex-wrap:wrap; align-items:center; }
     .tb { border:1px solid var(--line2); border-radius:5px; padding:2px 7px; font-size:11.5px; font-family:Consolas,monospace; color:#47474d; background:#fff; cursor:pointer; }
     .tb:hover { background:#f0f0f2; }
@@ -297,7 +304,7 @@
       state.tpl = JSON.parse(state.history.pop());
       state.lastEditKey = null;
       state.dirty = true;
-      if (state.sel && !locate(state.sel)) state.sel = null;
+      if (state.sel && state.sel !== PAPER_ID && !locate(state.sel)) state.sel = null;
       render();
     }
     function redo() {
@@ -306,9 +313,12 @@
       state.tpl = JSON.parse(state.future.pop());
       state.lastEditKey = null;
       state.dirty = true;
-      if (state.sel && !locate(state.sel)) state.sel = null;
+      if (state.sel && state.sel !== PAPER_ID && !locate(state.sel)) state.sel = null;
       render();
     }
+
+    // The "end of the bill" pseudo-block: blank lines before the cut, and the cut itself.
+    const PAPER_ID = "__paper__";
 
     // ------------------------------------------------------------ render
     function render(what) {
@@ -399,6 +409,14 @@
           if (!state.collapsed.has(b.id)) (b.blocks || []).forEach((c) => box.appendChild(blockRow(c, b)));
         } else box.appendChild(blockRow(b, null));
       });
+      const paper = state.tpl.paper || { feedLines: 3, cut: true };
+      const endRow = h("div", { class: "bk endrow" + (state.sel === PAPER_ID ? " sel" : ""), title: "Blank lines before the cut" });
+      endRow.appendChild(h("span"));
+      endRow.appendChild(h("span", { class: "ty" }, "END"));
+      endRow.appendChild(h("span", { class: "tx" }, (paper.feedLines === 1 ? "1 blank line" : paper.feedLines + " blank lines") + (paper.cut !== false ? ", then cut" : ", no cut")));
+      endRow.appendChild(h("span"));
+      endRow.addEventListener("click", () => select(PAPER_ID));
+      box.appendChild(endRow);
       const end = h("div", { class: "dropend" });
       end.addEventListener("dragover", (e) => { e.preventDefault(); end.classList.add("over"); });
       end.addEventListener("dragleave", () => end.classList.remove("over"));
@@ -469,12 +487,14 @@
       const phys = BT.fitLines(lines, cols());
       paper.style.setProperty("--cols", cols());
       paper.innerHTML = BT.physToHtml(phys, { selectedId: state.sel, paper: state.paper });
+      if (state.sel === PAPER_ID) { const cut = paper.querySelector(".pl.cut"); if (cut) cut.classList.add("sel"); }
       $("previewBtn").textContent = "Preview: " + previewLabel() + " ▾";
       $("previewBtn").title = previewBill().sample_store
         ? "Your own store name, address and tax numbers appear here once the app has synced with your account, or after the first bill prints on this PC."
         : "Sample order lines with your store's own details.";
     }
     $("paper").addEventListener("click", (e) => {
+      if (e.target.closest(".pl.cut")) { select(PAPER_ID); return; }
       const el = e.target.closest("[data-block]");
       if (!el || !el.dataset.block) return;
       state.scrollToSel = true;
@@ -552,6 +572,13 @@
       sel.value = value;
       sel.addEventListener("change", () => onChange(sel.value));
       return h("div", { class: "field" }, label ? h("label", null, label) : null, sel);
+    }
+    function sliderControl(label, value, min, max, step, onChange, format) {
+      const inp = h("input", { class: "range", type: "range", min, max, step });
+      inp.value = value;
+      const val = h("span", { class: "rangeval" }, format ? format(Number(value)) : String(value));
+      inp.addEventListener("input", () => { const v = Number(inp.value); val.textContent = format ? format(v) : String(v); onChange(v); });
+      return h("div", { class: "field" }, h("div", { class: "rangehead" }, h("label", null, label), val), inp);
     }
     function numberControl(label, value, min, max, onChange) {
       const inp = h("input", { class: "num", type: "number", min, max, step: 1 });
@@ -676,9 +703,20 @@
       commit((t) => { const l = locate(id); if (l) fn(l.block); }, { key, quiet: !!key });
     }
 
+    function renderPaperInspector(box) {
+      const paper = state.tpl.paper || (state.tpl.paper = { feedLines: 3, cut: true });
+      $("inspTitle").textContent = "End of the bill";
+      $("inspId").textContent = "";
+      box.appendChild(h("div", { class: "grp-t" }, "After the last line"));
+      box.appendChild(numberControl("Blank lines before the cut", paper.feedLines == null ? 3 : paper.feedLines, 0, 10, (v) => commit((t) => { t.paper.feedLines = v; })));
+      box.appendChild(toggleControl("Cut the paper", "off: no cut command, for printers without a cutter", paper.cut !== false, (v) => commit((t) => { t.paper.cut = v; })));
+      box.appendChild(h("div", { class: "note" }, "Blank lines elsewhere: press Enter inside a text block for a new line (an empty line prints blank), or add a Blank space block."));
+    }
+
     function renderInspector() {
       const box = $("insp");
       box.innerHTML = "";
+      if (state.sel === PAPER_ID) { renderPaperInspector(box); return; }
       const loc = selected();
       if (!loc) {
         $("inspTitle").textContent = "Nothing selected";
@@ -696,8 +734,8 @@
       switch (b.type) {
         case "text":
           section("Text");
-          add(textControl(null, b.text, (v) => P(b.id, (x) => { x.text = v; }, "text:" + b.id), { multiline: true, rows: 2 }));
-          add(h("div", { class: "note" }, "Fields like {store_name} are filled in from the order. Select words and use B / big to style just those words."));
+          add(textControl(null, b.text, (v) => P(b.id, (x) => { x.text = v; }, "text:" + b.id), { multiline: true, rows: 3 }));
+          add(h("div", { class: "note" }, "Enter starts a new line; an empty line prints as a blank line. Fields like {store_name} are filled in from the order. Select words and use B / big to style just those words."));
           section("Whole line");
           add(styleControls(() => b.style, (s) => P(b.id, (x) => { x.style = s; })));
           add(toggleControl("Wrap long text at spaces", "off: the printer breaks the line itself", b.wrap !== false, (v) => P(b.id, (x) => { if (v) delete x.wrap; else x.wrap = false; })));
@@ -763,7 +801,17 @@
           ], (v) => P(b.id, (x) => { x.source = v; })));
           if (b.source === "custom") add(textControl("Text or URL (fields allowed)", b.value, (v) => P(b.id, (x) => { x.value = v; }, "qrv:" + b.id), { tags: false }));
           else add(h("div", { class: "note" }, { bill_detail: "Prints only when the online-bill QR is switched on in the dashboard.", upi: "Prints only when a UPI id with the payment QR is set in the dashboard.", delivery_location: "Prints only when the order has a map pin." }[b.source]));
-          add(selectControl("Size", b.size || "s", [{ value: "s", label: "Small" }, { value: "m", label: "Medium" }, { value: "l", label: "Large" }], (v) => P(b.id, (x) => { x.size = v; })));
+          {
+            const b0 = previewBill();
+            const data = b.source === "bill_detail" ? (b0.bill_detail_url || "https://menuthere.com/bill/sample")
+              : b.source === "upi" ? (b0.payment_upi_string || "upi://pay?pa=sample@upi&pn=Sample&am=100.00&cu=INR")
+              : b.source === "delivery_location" ? ((b0.delivery_location && b0.delivery_location.google_maps_link) || "https://www.google.com/maps/place/10.01,76.35")
+              : (b.value || "sample");
+            const pct = typeof b.size === "number" ? b.size : BT.qrGeometry(data, b.size || "s", state.paper).percent;
+            const describe = (v) => { const g = BT.qrGeometry(data, v, state.paper); return v + "% of the paper · ≈ " + Math.round(g.dots / 8) + " mm wide"; };
+            add(sliderControl("Size", Math.min(100, Math.max(10, pct)), 10, 100, 5, (v) => P(b.id, (x) => { x.size = v; }, "qrsize:" + b.id), describe));
+            add(h("div", { class: "note" }, "Printed size on the " + state.paper + " roll. A QR that is too small is hard to scan; around 30–45% suits most bills."));
+          }
           add(textControl("Caption above", b.caption, (v) => P(b.id, (x) => { x.caption = v; }, "qrc:" + b.id), { tags: false }));
           add(textControl("Text below", b.captionBelow, (v) => P(b.id, (x) => { x.captionBelow = v; }, "qrb:" + b.id), { tags: false }));
           break;

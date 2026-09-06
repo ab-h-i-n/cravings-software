@@ -294,6 +294,22 @@
     return fillSegs(parseMarkup(text), ctx, blockStyle);
   }
 
+  // Cells and captions are one line each: a newline there is just a space.
+  const oneLine = (text) => str(text).replace(/\r?\n/g, " ");
+
+  // Break styled segments at newline characters into separate lines.
+  function splitSegsOnNewline(segs) {
+    const lines = [[]];
+    segs.forEach((seg) => {
+      const parts = seg.v.split(/\r?\n/);
+      parts.forEach((part, i) => {
+        if (i > 0) lines.push([]);
+        if (part.length) lines[lines.length - 1].push(cloneStyle(seg, part));
+      });
+    });
+    return lines;
+  }
+
   // ------------------------------------------------------------ resolve
   // template + bill -> logical lines. Options:
   //   sanitize: fn(text) -> text for the printer (default sanitizeForPrinter)
@@ -351,13 +367,17 @@
           if (!ctx.preview) return;
           ghost = ghost || "empty";
         }
-        out.push(tagLine({ t: "text", align, segs: r.segs, wrap: bk.wrap !== false }, bk, ghost, groupId));
+        // Enter in the text box is a line break, and an empty line prints as
+        // a blank line — so one block can hold a few lines with gaps between.
+        splitSegsOnNewline(r.segs).forEach((segs) => {
+          out.push(tagLine({ t: "text", align, segs, wrap: bk.wrap !== false }, bk, ghost, groupId));
+        });
         return;
       }
       case "row": {
         let tokens = 0, nonEmpty = 0;
         const cells = (bk.cells || []).map((c) => {
-          const r = resolveText(c.text, ctx, bk.style);
+          const r = resolveText(oneLine(c.text), ctx, bk.style);
           tokens += r.tokens; nonEmpty += r.nonEmpty;
           return { segs: r.segs, align: oneOf(c.align, ALIGNS, "left"), width: c.width === "flex" ? "flex" : (typeof c.width === "number" ? c.width : null) };
         });
@@ -403,11 +423,11 @@
         // Same shape as today: a blank line, the caption, the symbol, a blank
         // line, then anything under it.
         emit({ t: "feed", n: 1 });
-        const cap = resolveText(bk.caption, ctx, null);
+        const cap = resolveText(oneLine(bk.caption), ctx, null);
         if (cap.segs.length) emit({ t: "text", align: "center", segs: cap.segs, wrap: true });
-        emit({ t: "qr", v: value, size: oneOf(bk.size, QR_SIZES, "s"), align: "center" });
+        emit({ t: "qr", v: value, size: normalizeQrSize(bk.size), align: "center" });
         emit({ t: "feed", n: 1 });
-        const below = resolveText(bk.captionBelow, ctx, null);
+        const below = resolveText(oneLine(bk.captionBelow), ctx, null);
         if (below.segs.length && !(bk.hideIfEmpty !== false && below.tokens > 0 && below.nonEmpty === 0)) {
           emit({ t: "text", align: "center", segs: below.segs, wrap: true });
         }
@@ -529,7 +549,7 @@
   const isWide = (seg) => seg.size === "wide" || seg.size === "big";
   const segWidth = (seg) => seg.v.length * (isWide(seg) ? 2 : 1);
   const segsWidth = (segs) => segs.reduce((s, seg) => s + segWidth(seg), 0);
-  const cloneStyle = (seg, v) => ({ v, bold: seg.bold, underline: seg.underline, invert: seg.invert, size: seg.size });
+  function cloneStyle(seg, v) { return { v, bold: seg.bold, underline: seg.underline, invert: seg.invert, size: seg.size }; }
 
   // Break styled text into lines no wider than `width` columns, at spaces.
   // Internal spacing is kept when a line fits ("Ph  : 98…" keeps its gap);
@@ -744,11 +764,38 @@
     return q;
   }
 
-  // Module size per paper. "s" on either paper is what today's location/UPI QRs
-  // use; "m" on 80 mm is today's online-bill QR (4). Kept modest on 58 mm.
-  function qrModule(size, paper) {
-    const map = paper === "58mm" ? { s: 3, m: 3, l: 4 } : { s: 3, m: 4, l: 6 };
-    return map[size] || map.s;
+  // QR geometry. Two kinds of size:
+  //   "s" | "m" | "l"  — the original fixed module sizes ("s" on either paper is
+  //                      what today's location/UPI QRs use; "m" on 80 mm is
+  //                      today's online-bill QR). Kept so the default layout
+  //                      prints exactly as before.
+  //   10..100 (number) — the symbol's width as a percentage of the paper. The
+  //                      module count comes from the data length (byte mode,
+  //                      error correction L, as escposQr sets), so the dots per
+  //                      module follow: bigger percentage, bigger print.
+  const QR_BYTE_CAPACITY_L = [17, 32, 53, 78, 106, 134, 154, 192, 230, 271, 321, 367, 425, 458, 520, 586, 644, 718, 792, 858];
+  function qrModulesFor(data) {
+    const n = str(data).length;
+    for (let v = 0; v < QR_BYTE_CAPACITY_L.length; v++) {
+      if (n <= QR_BYTE_CAPACITY_L[v]) return 21 + 4 * v;
+    }
+    return 21 + 4 * QR_BYTE_CAPACITY_L.length;
+  }
+  function paperDots(paper) { return paper === "58mm" ? 384 : 576; }
+  function qrGeometry(data, size, paper) {
+    const modules = qrModulesFor(data);
+    let module;
+    if (typeof size === "number" && Number.isFinite(size)) {
+      const pct = Math.min(100, Math.max(10, size));
+      module = Math.max(1, Math.min(16, Math.floor((paperDots(paper) * pct) / 100 / modules)));
+    } else {
+      const map = paper === "58mm" ? { s: 3, m: 3, l: 4 } : { s: 3, m: 4, l: 6 };
+      module = map[size] || map.s;
+    }
+    return { modules, module, dots: modules * module, percent: Math.round((modules * module * 100) / paperDots(paper)) };
+  }
+  function qrModule(size, paper, data) {
+    return qrGeometry(data || "", size, paper).module;
   }
 
   const SIZE_BYTE = { normal: 0x00, tall: 0x01, wide: 0x10, big: 0x11 };
@@ -784,7 +831,7 @@
       if (line.t === "qr") {
         setAlign("center");
         setStyle(plain);
-        out += escposQr(sanitizeForPrinter(line.v), qrModule(line.size, paper));
+        out += escposQr(sanitizeForPrinter(line.v), qrModule(line.size, paper, sanitizeForPrinter(line.v)));
         return;
       }
       if (line.t === "image") {
@@ -835,8 +882,9 @@
         (line.groupId ? ' data-group="' + escapeHtml(line.groupId) + '"' : "") +
         (line.ghost ? ' title="' + escapeHtml(GHOST_TEXT[line.ghost] || line.ghost) + '"' : "");
       if (line.t === "qr") {
-        const mod = qrModule(line.size, opts.paper);
-        const ch = (29 * mod / 12).toFixed(1);
+        // Font A is 12 dots wide, so dots / 12 = character cells.
+        const g = qrGeometry(sanitizeForPrinter(line.v), line.size, opts.paper);
+        const ch = (g.dots / 12).toFixed(1);
         html.push('<div class="' + cls.join(" ") + ' qrline"' + attrs + ' style="text-align:center"><span class="qrph" style="width:' + ch + 'ch;height:' + ch + 'ch"></span></div>');
         return;
       }
@@ -872,6 +920,13 @@
   }
 
   // ------------------------------------------------------------ template shape
+  // A percentage (10-100) or one of the legacy letters; anything else is "s".
+  function normalizeQrSize(v) {
+    if (typeof v === "number" && Number.isFinite(v)) return Math.min(100, Math.max(10, Math.round(v)));
+    if (typeof v === "string" && /^\d+$/.test(v)) return Math.min(100, Math.max(10, parseInt(v, 10)));
+    return oneOf(v, QR_SIZES, "s");
+  }
+
   function normalizeStyle(s) {
     if (!s || typeof s !== "object") return undefined;
     const out = {};
@@ -940,7 +995,7 @@
       case "qr":
         b.source = oneOf(raw.source, QR_SOURCES, "bill_detail");
         if (b.source === "custom") b.value = capText(raw.value);
-        b.size = oneOf(raw.size, QR_SIZES, "s");
+        b.size = normalizeQrSize(raw.size);
         if (raw.caption != null && str(raw.caption)) b.caption = capText(raw.caption);
         if (raw.captionBelow != null && str(raw.captionBelow)) b.captionBelow = capText(raw.captionBelow);
         break;
@@ -1013,7 +1068,7 @@
       case "rule": return { id, type };
       case "space": return { id, type, lines: 1 };
       case "image": return { id, type, src: "logo", width: 50 };
-      case "qr": return { id, type, source: "bill_detail", size: "m", caption: "Scan for bill details" };
+      case "qr": return { id, type, source: "bill_detail", size: 30, caption: "Scan for bill details" };
       case "items": return { id, type, layout: "inline", format: "{qty} x {name}" };
       case "charges": return { id, type };
       case "group": return { id, type, label: "Section", blocks: [] };
@@ -1154,7 +1209,7 @@
     FIELDS, ITEM_FIELDS, WHEN_FIELDS, TYPE_LABELS, DEFAULT_COLUMNS,
     DEFAULT_TEMPLATE, SAMPLE_BILL,
     sanitizeForPrinter, to12Hour, generatedStamp, orderTypeKey, hasValue, evalWhen,
-    parseMarkup, resolveBill, fitLines, physToEscPos, physToHtml, escposQr, qrModule,
+    parseMarkup, resolveBill, fitLines, physToEscPos, physToHtml, escposQr, qrModule, qrGeometry, qrModulesFor,
     normalizeTemplate, newBlock, summarizeBlock, uid,
   };
 });
