@@ -650,8 +650,10 @@ const DEFAULT_PRINT_CONFIG = {
   // works offline and a PC that has not synced yet still prints the last layout
   // it saved. null = never customised -> convertBillToEscPos exactly as before.
   billTemplate: null,
-  // Per-PC switch: keep the saved layout but print the built-in bill here.
-  billTemplateUseDefault: false,
+  // Per-PC opt-in ("Use Customized bill" in Printer Settings). Off on every
+  // install: a saved layout prints only where this is ticked; until then the
+  // built-in bill prints, exactly as before this feature existed.
+  billTemplateUseCustom: false,
   // Sync bookkeeping: when the local copy last matched the account, whether a
   // local save is still waiting to be pushed, and when it was last changed.
   billTemplateSyncedAt: null,
@@ -739,7 +741,7 @@ function loadPrintConfig() {
       if (isValidBillLayout(parsed.billLayout)) cfg.billLayout = parsed.billLayout;
       const tpl = BillTemplate.normalizeTemplate(parsed.billTemplate);
       if (tpl) cfg.billTemplate = tpl;
-      if (typeof parsed.billTemplateUseDefault === "boolean") cfg.billTemplateUseDefault = parsed.billTemplateUseDefault;
+      if (typeof parsed.billTemplateUseCustom === "boolean") cfg.billTemplateUseCustom = parsed.billTemplateUseCustom;
       if (typeof parsed.billTemplateSyncedAt === "string") cfg.billTemplateSyncedAt = parsed.billTemplateSyncedAt;
       if (typeof parsed.billTemplatePending === "boolean") cfg.billTemplatePending = parsed.billTemplatePending;
       if (typeof parsed.billTemplateUpdatedAt === "string") cfg.billTemplateUpdatedAt = parsed.billTemplateUpdatedAt;
@@ -790,8 +792,8 @@ function savePrintConfig(incoming) {
   const isoOrNull = (v) => (typeof v === "string" && v ? v : null);
   clean.billTemplate = has("billTemplate")
     ? (BillTemplate.normalizeTemplate(incoming.billTemplate) || null) : printConfig.billTemplate;
-  clean.billTemplateUseDefault = (incoming && typeof incoming.billTemplateUseDefault === "boolean")
-    ? incoming.billTemplateUseDefault : !!printConfig.billTemplateUseDefault;
+  clean.billTemplateUseCustom = (incoming && typeof incoming.billTemplateUseCustom === "boolean")
+    ? incoming.billTemplateUseCustom : !!printConfig.billTemplateUseCustom;
   clean.billTemplateSyncedAt = has("billTemplateSyncedAt") ? isoOrNull(incoming.billTemplateSyncedAt) : printConfig.billTemplateSyncedAt;
   clean.billTemplatePending = (incoming && typeof incoming.billTemplatePending === "boolean")
     ? incoming.billTemplatePending : !!printConfig.billTemplatePending;
@@ -1259,7 +1261,7 @@ function sampleBill() {
 // Which layout a bill prints with: the account's copy travelling in the payload
 // (freshest), else this PC's copy, else none — which means the built-in bill.
 function activeBillTemplate(bill) {
-  if (printConfig.billTemplateUseDefault) return null;
+  if (!printConfig.billTemplateUseCustom) return null; // not opted in on this PC
   const fromPayload = bill && bill.bill_template ? BillTemplate.normalizeTemplate(bill.bill_template) : null;
   return fromPayload || printConfig.billTemplate || null;
 }
@@ -1422,7 +1424,7 @@ function templateStatus() {
     storeName: printConfig.billStore ? printConfig.billStore.store_name : null,
     hasTemplate: !!tpl,
     blocks: tpl ? tpl.blocks.length : 0,
-    useDefault: !!printConfig.billTemplateUseDefault,
+    useCustom: !!printConfig.billTemplateUseCustom,
     pending: !!printConfig.billTemplatePending,
     syncedAt: printConfig.billTemplateSyncedAt,
     updatedAt: printConfig.billTemplateUpdatedAt,
@@ -2142,9 +2144,9 @@ ipcMain.handle("bill-template:save", async (_e, raw) => {
   await syncBillTemplate("saved");
   return { ok: true, status: templateStatus() };
 });
-ipcMain.handle("bill-template:use-default", (_e, on) => {
-  savePrintConfig({ ...printConfig, billTemplateUseDefault: !!on });
-  log.info(`Bill layout: ${on ? "printing the built-in layout on this PC" : "using the custom layout"}`);
+ipcMain.handle("bill-template:use-custom", (_e, on) => {
+  savePrintConfig({ ...printConfig, billTemplateUseCustom: !!on });
+  log.info(`Bill layout: ${on ? "using the customized bill on this PC" : "printing the built-in bill on this PC"}`);
   broadcastTemplateStatus();
   return templateStatus();
 });

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("designer", {
   save: (template) => ipcRenderer.invoke("bill-template:save", template),
   sync: () => ipcRenderer.invoke("bill-template:sync"),
   status: () => ipcRenderer.invoke("bill-template:status"),
+  useCustom: (on) => ipcRenderer.invoke("bill-template:use-custom", on),
   test: (template, which) => ipcRenderer.invoke("bill-template:test", { template, which }),
   pickImage: (width) => ipcRenderer.invoke("bill-template:pick-image", { width }),
   fetchImage: (url) => ipcRenderer.invoke("bill-template:fetch-image", url),

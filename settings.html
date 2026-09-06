@@ -90,7 +90,7 @@
       </div>
       <div class="lstat"><span id="layoutName"><b>Built-in layout</b></span><span id="layoutSync" class="lsync"></span></div>
       <div class="btns" style="margin-top:8px"><button id="customizeBtn" class="primary">Customize…</button></div>
-      <label class="chk" style="margin-top:10px"><input type="checkbox" id="useDefaultChk"><span>Print the built-in layout on this PC<div class="h">Keeps your saved layout; this PC just doesn't use it.</div></span></label>
+      <label class="chk" style="margin-top:10px"><input type="checkbox" id="useCustomChk"><span>Use Customized bill<div class="h">Unticked: the built-in bill prints. Ticked: your customized layout prints on this PC.</div></span></label>
       <div class="hint">Every line of the bill is editable. The layout is saved to your Menuthere account, so it follows you to any PC and the Menuthere team can adjust it for you. Applies to ESC/POS prints.</div>
     </div>
 
@@ -324,9 +324,9 @@
     function renderLayoutStatus(s) {
       if (!s) return;
       const name = $("layoutName"), sync = $("layoutSync");
-      if (!s.hasTemplate) name.innerHTML = "<b>Built-in layout</b> (today's bill)";
-      else if (s.useDefault) name.innerHTML = "<b>Built-in layout</b> · custom layout saved (" + s.blocks + " blocks) but not used here";
-      else name.innerHTML = "<b>Custom layout</b> · " + s.blocks + " blocks";
+      if (!s.hasTemplate) name.innerHTML = "<b>Built-in bill</b>" + (s.useCustom ? " · no customized bill saved yet" : "");
+      else if (!s.useCustom) name.innerHTML = "<b>Built-in bill</b> · customized bill saved (" + s.blocks + " blocks), not in use here";
+      else name.innerHTML = "<b>Customized bill</b> · " + s.blocks + " blocks";
       const st = s.sync || {};
       let text = "", cls = "";
       if (st.state === "syncing") text = "Syncing…";
@@ -334,11 +334,11 @@
       else if (s.hasTemplate && (st.state === "synced" || s.syncedAt)) { text = "Synced to your account" + (s.syncedAt ? " · " + fmtTime(s.syncedAt) : ""); cls = "ok"; }
       sync.textContent = text;
       sync.className = "lsync" + (cls ? " " + cls : "");
-      $("useDefaultChk").checked = !!s.useDefault;
+      $("useCustomChk").checked = !!s.useCustom;
     }
     $("customizeBtn").addEventListener("click", () => window.printSettings.openDesigner());
-    $("useDefaultChk").addEventListener("change", async (e) => {
-      renderLayoutStatus(await window.printSettings.layoutUseDefault(e.target.checked));
+    $("useCustomChk").addEventListener("change", async (e) => {
+      renderLayoutStatus(await window.printSettings.layoutUseCustom(e.target.checked));
     });
     $("layoutSyncBtn").addEventListener("click", async (e) => {
       e.preventDefault();
