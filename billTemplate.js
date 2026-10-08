@@ -1326,6 +1326,7 @@
   const toKot = (b) => ({
     id: b.id, display_id: b.display_id, created_at: b.created_at, time: b.time,
     table_number: b.table_number, table_name: b.table_name, type: b.type, notes: b.notes,
+    customer_name: b.customer_name, customer_phone: b.customer_phone,
     items: b.order_items.map((it, i) => Object.assign({}, it, i === 0 ? { notes: "less spicy" } : {})),
     generated_at: b.generated_at,
   });
