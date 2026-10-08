@@ -112,6 +112,20 @@
   // Everything the /bill payload carries, named for humans. `labelOnly` fields
   // never count as content for "hide when empty" (a line that only has a
   // currency symbol on it is still empty).
+  // The order's own number, without the date the /bill and /kot pages append
+  // to it ("42-06/09/2026" -> "42"). Newer pages also send it as `order_no`.
+  // Blank when the order has no number (the page then sends the short id in
+  // its place), so a line built on it hides itself.
+  function orderNumber(b) {
+    if (b.order_no != null && String(b.order_no).trim() !== "") return String(b.order_no).trim();
+    const d = str(b.display_id).trim();
+    if (!d) return "";
+    const m = d.match(/^(.*?)-\d{1,2}\/\d{1,2}\/\d{2,4}$/);
+    if (m) return m[1];
+    if (d === str(b.id).slice(0, 8)) return "";
+    return d;
+  }
+
   const calc = (b) => (b && b.calculations) || null;
   // The bill payload carries `order_items`, the KOT payload `items`.
   const items = (b) => (b && Array.isArray(b.order_items) ? b.order_items : (b && Array.isArray(b.items) ? b.items : []));
@@ -128,7 +142,7 @@
     { key: "fssai", group: "Store", label: "FSSAI licence", get: (b) => str(b.fssai_licence_no) },
 
     { key: "order_id", group: "Order", label: "Order id (short)", get: (b) => str(b.id).slice(0, 8) || str(b.display_id) },
-    { key: "order_no", group: "Order", label: "Order number", get: (b) => str(b.display_id) },
+    { key: "order_no", group: "Order", label: "Order number (no date)", get: (b) => orderNumber(b) },
     { key: "date", group: "Order", label: "Date", get: (b) => str(b.created_at) },
     { key: "time", group: "Order", label: "Time", get: (b) => to12Hour(b.time) },
     { key: "order_type", group: "Order", label: "Order type", get: (b) => str(b.type) },
