@@ -116,13 +116,23 @@
   // to it ("42-06/09/2026" -> "42"). Newer pages also send it as `order_no`.
   // Blank when the order has no number (the page then sends the short id in
   // its place), so a line built on it hides itself.
+  // The order's 6-digit short id (orders since 2026-11-02). An order without
+  // one (older orders keep an 8-character code) prints its order number
+  // instead, and only an order with neither falls back to the uuid's first 8.
+  const SIX_DIGITS = /^\d{6}$/;
+  function orderShortId(b) {
+    const code = str(b.order_short_id).trim() || str(b.short_id).trim();
+    if (SIX_DIGITS.test(code)) return code;
+    return orderNumber(b) || code || str(b.id).slice(0, 8);
+  }
+
   function orderNumber(b) {
     if (b.order_no != null && String(b.order_no).trim() !== "") return String(b.order_no).trim();
     const d = str(b.display_id).trim();
     if (!d) return "";
     const m = d.match(/^(.*?)-\d{1,2}\/\d{1,2}\/\d{2,4}$/);
     if (m) return m[1];
-    if (d === str(b.id).slice(0, 8)) return "";
+    if (d === str(b.id).slice(0, 8) || d === str(b.order_short_id).trim() || d === str(b.short_id).trim()) return "";
     return d;
   }
 
@@ -143,6 +153,9 @@
 
     { key: "order_id", group: "Order", label: "Order id (short)", get: (b) => str(b.id).slice(0, 8) || str(b.display_id) },
     { key: "order_no", group: "Order", label: "Order number (no date)", get: (b) => orderNumber(b) },
+    // The code the customer and the dashboard show (see orderShortId). Its
+    // last 4 print bold — staff call an order by them.
+    { key: "order_short_id", group: "Order", label: "Order short id (last 4 bold)", boldTail: 4, get: (b) => orderShortId(b) },
     { key: "date", group: "Order", label: "Date", get: (b) => str(b.created_at) },
     { key: "time", group: "Order", label: "Time", get: (b) => to12Hour(b.time) },
     { key: "order_type", group: "Order", label: "Order type", get: (b) => str(b.type) },
@@ -286,24 +299,44 @@
     let tokens = 0;
     let nonEmpty = 0;
     const out = [];
+    const s = blockStyle || {};
     segs.forEach((seg) => {
-      const v = seg.v.replace(TOKEN_RE, (whole, key) => {
+      // A field with boldTail (the order short id) splits its segment so its
+      // last characters print bold; everything else stays one segment.
+      const pieces = [{ v: "", bold: false }];
+      const add = (v, bold) => {
+        const last = pieces[pieces.length - 1];
+        if (last.bold === bold) last.v += v;
+        else pieces.push({ v, bold });
+      };
+      let at = 0;
+      let m;
+      TOKEN_RE.lastIndex = 0;
+      while ((m = TOKEN_RE.exec(seg.v))) {
+        add(seg.v.slice(at, m.index), false);
+        at = m.index + m[0].length;
+        const key = m[1];
         let val = null;
         let labelOnly = false;
+        let tail = 0;
         if (ctx.item && ITEM_FIELD_MAP[key]) val = ITEM_FIELD_MAP[key].get(ctx.item);
-        else if (FIELD_MAP[key]) { val = FIELD_MAP[key].get(ctx.bill); labelOnly = !!FIELD_MAP[key].labelOnly; }
-        if (val === null) return whole; // unknown field: leave it visible
+        else if (FIELD_MAP[key]) { val = FIELD_MAP[key].get(ctx.bill); labelOnly = !!FIELD_MAP[key].labelOnly; tail = FIELD_MAP[key].boldTail || 0; }
+        if (val === null) { add(m[0], false); continue; } // unknown field: leave it visible
         val = ctx.sanitize(val);
         if (!labelOnly) { tokens += 1; if (val) nonEmpty += 1; }
-        return val;
-      });
-      const s = blockStyle || {};
-      out.push({
-        v: ctx.sanitize(v),
-        bold: !!(seg.bold || s.bold),
-        underline: !!(seg.underline || s.underline),
-        invert: !!(seg.invert || s.invert),
-        size: seg.size || (s.size && s.size !== "normal" ? s.size : null),
+        const cut = tail && val.length > tail ? val.length - tail : 0;
+        if (cut) { add(val.slice(0, cut), false); add(val.slice(cut), true); }
+        else add(val, false);
+      }
+      add(seg.v.slice(at), false);
+      pieces.forEach((pc) => {
+        out.push({
+          v: ctx.sanitize(pc.v),
+          bold: !!(seg.bold || s.bold || pc.bold),
+          underline: !!(seg.underline || s.underline),
+          invert: !!(seg.invert || s.invert),
+          size: seg.size || (s.size && s.size !== "normal" ? s.size : null),
+        });
       });
     });
     return { segs: out.filter((s) => s.v.length > 0), tokens, nonEmpty };
@@ -1188,7 +1221,7 @@
         { id: "t1", type: "text", text: "{table}", style: { align: "center", bold: true } },
         { id: "t2", type: "rule" },
       ] },
-      { id: "ord", type: "text", text: "Order: #{order_id}" },
+      { id: "ord", type: "text", text: "Order: #{order_short_id}" },
       { id: "dt", type: "row", cells: [{ text: "Date : {date}" }, { text: "Time: {time}", align: "right" }] },
       { id: "type", type: "text", text: "Type : {order_type}" },
       { id: "pay", type: "text", text: "Pay  : {payment_method}" },
@@ -1250,7 +1283,7 @@
         { id: "kt1", type: "text", text: "{table}", style: { align: "center", bold: true } },
         { id: "kt2", type: "rule" },
       ] },
-      { id: "kord", type: "text", text: "Order: #{order_id}" },
+      { id: "kord", type: "text", text: "Order: #{order_short_id}" },
       { id: "ktype", type: "text", text: "Type : {order_type}" },
       { id: "ktime", type: "text", text: "Time : {time}" },
       { id: "kpreb", type: "text", text: "Prebooked: {prebooking_time}", style: { bold: true }, when: { has: "prebooking_time" } },
@@ -1274,6 +1307,7 @@
   // so every block of the default layout is exercised.
   const SAMPLE_BILL = {
     id: "a1b2c3d4-5e6f-7890-abcd-ef1234567890",
+    order_short_id: "482913",
     display_id: "42-06/09/2026", // as the /bill page sends it: number-date, or the short id
     created_at: "06/09/2026",
     time: "13:40",
@@ -1316,6 +1350,7 @@
   // of order. `type` strings are what the /bill page emits for each.
   const SAMPLE_BILL_TAKEAWAY = Object.assign({}, SAMPLE_BILL, {
     id: "b2c3d4e5-6f70-8192-a3b4-c5d6e7f80912",
+    order_short_id: "517604",
     display_id: "43-06/09/2026",
     type: "Takeaway",
     payment_method: "upi",
@@ -1331,6 +1366,7 @@
   });
   const SAMPLE_BILL_DINE_IN = Object.assign({}, SAMPLE_BILL, {
     id: "c3d4e5f6-7081-92a3-b4c5-d6e7f8091a23",
+    order_short_id: "630295",
     display_id: "44-06/09/2026",
     type: " Table 5",
     table_number: 5,
@@ -1352,7 +1388,7 @@
   // The same orders as the kitchen sees them: the /kot payload carries only the
   // order, its table and its items (with the kitchen note per item).
   const toKot = (b) => ({
-    id: b.id, display_id: b.display_id, created_at: b.created_at, time: b.time,
+    id: b.id, order_short_id: b.order_short_id, display_id: b.display_id, created_at: b.created_at, time: b.time,
     table_number: b.table_number, table_name: b.table_name, type: b.type, notes: b.notes,
     customer_name: b.customer_name, customer_phone: b.customer_phone,
     prebooking_time: b.prebooking_time,

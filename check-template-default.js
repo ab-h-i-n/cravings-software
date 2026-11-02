@@ -28,6 +28,7 @@ function loadLegacy(activeType) {
     printConfig: { activeType },
     escposCharsPerLine: () => (activeType === "58mm" ? 32 : 48),
     cutBytes: () => "\x1D\x56\x42\x00",
+    BillTemplate,
     console,
   };
   vm.createContext(sandbox);

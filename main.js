@@ -188,6 +188,16 @@ function escposWrap(str, width) {
   if (cur.length) lines.push(cur);
   return lines.length ? lines : [""];
 }
+// "#482913" with the last 4 bold — the order's 6-digit short id, same rule as
+// {order_short_id} in a layout: an order without one prints its order number,
+// and only an order with neither falls back to the uuid's first 8.
+function shortIdEscPos(o, boldOn, boldOff) {
+  const code = BillTemplate.FIELDS.find((f) => f.key === "order_short_id").get(o);
+  if (!code) return "";
+  const cut = Math.max(0, code.length - 4);
+  return "#" + code.slice(0, cut) + boldOn + code.slice(cut) + boldOff;
+}
+
 function convertOrderToEscPos(order) {
   const ESC = "\x1B";
   const GS = "\x1D";
@@ -264,9 +274,7 @@ function convertOrderToEscPos(order) {
   // The Order line carries the short order ID — that is what matches the
   // dashboard and support tickets. Falls back to the display number only if an
   // order somehow has no id.
-  const kotShortId = String(order.id || "").slice(0, 8);
-  const kotOrderNo = order.display_id || "";
-  buffer += textLine(`Order: ${kotShortId ? "#" + kotShortId : kotOrderNo}`);
+  buffer += textLine(`Order: ${shortIdEscPos(order, BOLD_ON, BOLD_OFF)}`);
   buffer += textLine(`Type : ${order.type}`);
   // When the order was placed. The KOT had no time at all, so the kitchen could
   // not tell a fresh ticket from one that had been sitting on the spike.
@@ -322,7 +330,7 @@ function convertOrderToEscPos(order) {
     .forEach((ln) => { buffer += textLine(ln); });
   
   if (order.display_id && Number(order.display_id) > 0) {
-       buffer += textLine(`ID: ${order.id.slice(0, 8)}`);
+       buffer += textLine(`ID: ${shortIdEscPos(order, BOLD_ON, BOLD_OFF)}`);
   }
   
   buffer += LF;
@@ -413,12 +421,10 @@ function convertBillToEscPos(bill) {
   // 4. Bill Info
   buffer += ALIGN_LEFT;
   // The Order line carries the short order ID — see the KOT note above.
-  const billShortId = String(bill.id || "").slice(0, 8);
-  const billOrderNo = bill.display_id || "";
   // Only the short id identifies the order now — the sequential order number was
   // dropped from the bill (as it was from the KOT). It still stands in as the
   // Order value on the odd payload that carries no id at all.
-  buffer += pair(`Order: ${billShortId ? "#" + billShortId : billOrderNo}`, "");
+  buffer += textLine(`Order: ${shortIdEscPos(bill, BOLD_ON, BOLD_OFF)}`);
   buffer += pair(`Date : ${bill.created_at}`, `Time: ${to12Hour(bill.time)}`);
 
   buffer += pair(`Type : ${bill.type}`, "");

@@ -2,6 +2,7 @@
 // Rendered from the order JSON (the "Bill Contents JSON" the page logs), loaded into the
 // hidden print window, and rasterized like any other receipt.
 
+const BillTemplate = require("./billTemplate");
 const esc = (s) =>
   String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -25,8 +26,11 @@ async function buildInvoiceHtml(order, srcWidth, fullArabic = false) {
   const grand = Number(c.grand_total) || 0;
   const productValue = Math.max(0, grand - vat);
   const discount = Number(c.discount_amount) || 0;
-  const invoiceNo = (Number(order.display_id) > 0 ? order.display_id : String(order.id || "").slice(0, 8));
-  const orderNo = (Number(order.display_id) > 0 ? order.display_id : String(order.id || "").slice(0, 4)).toString();
+  // Order # is the order's short id (6 digits since 2026-11-02), last 4 bold;
+  // the invoice number stays the store's own sequential number.
+  // 6-digit short id, else the order number, else the uuid's first 8.
+  const shortId = BillTemplate.FIELDS.find((f) => f.key === "order_short_id").get(order);
+  const invoiceNo = (Number(order.display_id) > 0 ? order.display_id : shortId);
   const dateTime = `${order.created_at || ""} ${order.time || ""}`.trim();
   const typeText = esc(typeLabel(order.type, fullArabic));
   const payMethod = esc((order.payment_method || "cash")).toUpperCase();
@@ -93,7 +97,7 @@ async function buildInvoiceHtml(order, srcWidth, fullArabic = false) {
   ${order.phone ? `<div class="c sub">${fullArabic ? "رقم الجوال" : "Mobile"} : <span class="mono">${esc(order.phone)}</span></div>` : ""}
   ${fullArabic ? `<div class="c b" style="margin-top:5px;">فاتورة ضريبية مبسطة</div><div class="c b">Simplified Tax Invoice</div>`
               : `<div class="c b" style="margin-top:5px;">Simplified Tax Invoice</div>`}
-  <div class="orderbox">${fullArabic ? "طلب" : "Order"} #&nbsp;&nbsp;<span class="mono">${esc(orderNo)}</span></div>
+  <div class="orderbox">${fullArabic ? "طلب" : "Order"} #&nbsp;&nbsp;<span class="mono">${shortId.length > 4 ? `${esc(shortId.slice(0, -4))}<b>${esc(shortId.slice(-4))}</b>` : esc(shortId)}</span></div>
   <div class="head2">
     <span>${fullArabic ? "ر الفاتورة" : "Invoice #"}<br><span class="mono">${esc(invoiceNo)}</span></span>
     <span class="r">${typeText}<br><span class="mono">${esc(dateTime)}</span></span>
