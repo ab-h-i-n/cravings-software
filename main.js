@@ -200,7 +200,7 @@ function convertOrderToEscPos(order) {
   const ALIGN_RIGHT = ESC + "a" + "\x02";
   const BOLD_ON = ESC + "E" + "\x01";
   const BOLD_OFF = ESC + "E" + "\x00";
-  const CUT_FULL = GS + "V" + "\x42" + "\x00";
+  const CUT_FULL = cutBytes();
   
   // Constants
   const WIDTH = escposCharsPerLine(); // 58mm = 32 cols, 80mm = 48
@@ -338,7 +338,7 @@ function convertBillToEscPos(bill) {
   const ALIGN_RIGHT = ESC + "a" + "\x02";
   const BOLD_ON = ESC + "E" + "\x01";
   const BOLD_OFF = ESC + "E" + "\x00";
-  const CUT_FULL = GS + "V" + "\x42" + "\x00";
+  const CUT_FULL = cutBytes();
   
   const WIDTH = escposCharsPerLine(); // 58mm = 32 cols, 80mm = 48
 
@@ -644,6 +644,12 @@ const DEFAULT_PRINT_CONFIG = {
   //                        but DEFAULT layout only: no custom layouts, no Arabic,
   //                        no logos (the printer simply cannot render them).
   printMode: "raster",
+  // Which paper-cut command ends every job:
+  //   "escpos" (default) — GS V 66 0, Epson-style feed + cut.
+  //   "star"             — ESC d 2, Star Line Mode full cut. Star printers (e.g.
+  //                        TSP650II) ship in Star Line Mode and ignore GS V, so
+  //                        the paper feeds but never cuts.
+  cutCommand: "escpos",
   // Custom ESC/POS bill layout (Printer Settings -> Bill layout -> Customize...).
   // The layout lives in the partner's account (partners.bill_template) and
   // travels inside every /bill payload; this is the local copy, so a test print
@@ -678,6 +684,12 @@ const DEFAULT_PRINT_CONFIG = {
   },
 };
 let printConfig = JSON.parse(JSON.stringify(DEFAULT_PRINT_CONFIG));
+
+const isValidCutCommand = (c) => c === "escpos" || c === "star";
+// The bytes that cut the paper on the configured printer (see cutCommand).
+function cutBytes() {
+  return printConfig.cutCommand === "star" ? "\x1B\x64\x02" : "\x1D\x56\x42\x00";
+}
 
 // Bill layouts that render their own HTML from the order JSON (vs "default", which prints
 // the live cravings page). Add new custom layouts here + a branch in buildBillLayoutHtml.
@@ -744,6 +756,7 @@ function loadPrintConfig() {
       if (bp) cfg.billPrinters = bp;
       if (kp) cfg.kotPrinters = kp;
       if (parsed.printMode === "raster" || parsed.printMode === "escpos") cfg.printMode = parsed.printMode;
+      if (isValidCutCommand(parsed.cutCommand)) cfg.cutCommand = parsed.cutCommand;
       if (isValidBillLayout(parsed.billLayout)) cfg.billLayout = parsed.billLayout;
       const tpl = BillTemplate.normalizeTemplate(parsed.billTemplate);
       if (tpl) cfg.billTemplate = tpl;
@@ -798,6 +811,8 @@ function savePrintConfig(incoming) {
     ? incoming.muteOrderSound : printConfig.muteOrderSound;
   clean.printMode = (incoming && (incoming.printMode === "raster" || incoming.printMode === "escpos"))
     ? incoming.printMode : printConfig.printMode;
+  clean.cutCommand = (incoming && isValidCutCommand(incoming.cutCommand))
+    ? incoming.cutCommand : printConfig.cutCommand;
   // Bill layout keys: a key present in `incoming` wins (null clears it),
   // otherwise keep what we have — the settings window sends a partial config.
   const has = (k) => !!incoming && Object.prototype.hasOwnProperty.call(incoming, k);
@@ -1075,7 +1090,7 @@ function bitmapToRaster(bgra, w, h) {
   return Buffer.concat([
     Buffer.from([0x1b, 0x40]), // ESC @ init
     rasterBands(bgra, w, h),
-    Buffer.from([0x0a, 0x0a, 0x0a, 0x0a, 0x1d, 0x56, 0x42, 0x00]), // feed + cut
+    Buffer.from("\x0a\x0a\x0a\x0a" + cutBytes(), "latin1"), // feed + cut
   ]);
 }
 
@@ -1330,7 +1345,7 @@ async function buildTemplateEscPos(tpl, bill) {
   const lines = BillTemplate.resolveBill(tpl, bill, { paper: printConfig.activeType });
   await resolveImageLines(lines);
   const phys = BillTemplate.fitLines(lines, cols);
-  return Buffer.from(BillTemplate.physToEscPos(phys, { paper: printConfig.activeType }), "latin1");
+  return Buffer.from(BillTemplate.physToEscPos(phys, { paper: printConfig.activeType, cut: cutBytes() }), "latin1");
 }
 
 // A payload that carries the account's layout keeps this PC's copy current even

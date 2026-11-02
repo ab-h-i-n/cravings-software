@@ -854,7 +854,7 @@
     phys.forEach((line) => {
       if (line.t === "cut") {
         setStyle(plain);
-        out += GS + "V" + "\x42" + "\x00";
+        out += opts.cut || GS + "V" + "\x42" + "\x00"; // caller's cut bytes (Star printers differ)
         return;
       }
       if (line.t === "qr") {

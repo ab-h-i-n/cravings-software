@@ -27,6 +27,7 @@ function loadLegacy(activeType) {
     Buffer,
     printConfig: { activeType },
     escposCharsPerLine: () => (activeType === "58mm" ? 32 : 48),
+    cutBytes: () => "\x1D\x56\x42\x00",
     console,
   };
   vm.createContext(sandbox);

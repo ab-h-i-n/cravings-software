@@ -91,6 +91,15 @@
       <div class="hint" id="modeHint"></div>
     </div>
 
+    <div class="card">
+      <span class="lbl">Paper cut</span>
+      <div class="types" id="cuts">
+        <label class="type" data-cut="escpos"><input type="radio" name="pcut" value="escpos"><div class="t">Standard</div><div class="d">Epson &amp; most printers</div></label>
+        <label class="type" data-cut="star"><input type="radio" name="pcut" value="star"><div class="t">Star</div><div class="d">TSP650II, TSP100…</div></label>
+      </div>
+      <div class="hint">If the paper feeds out but is never cut, switch this and run a test print.</div>
+    </div>
+
     <div class="card" id="layoutCard">
       <div class="phead">
         <span class="lbl" style="margin:0">Bill &amp; KOT layout (ESC/POS)</span>
@@ -156,7 +165,7 @@
     const widthNum = $("widthNum"), widthRange = $("widthRange");
     const scaleNum = $("scaleNum"), scaleRange = $("scaleRange");
     const status = $("status"), srcInfo = $("srcInfo");
-    let cfg = null, currentType = "80mm", currentMode = "raster";
+    let cfg = null, currentType = "80mm", currentMode = "raster", currentCut = "escpos";
 
     const clampW = (w) => Math.min(1200, Math.max(120, Math.round((Number(w) || 384) / 8) * 8));
     const clampS = (s) => Math.min(3, Math.max(1, Math.round((Number(s) || 1.6) * 100) / 100));
@@ -248,6 +257,11 @@
     }
     // NB: scope by container id — the mode cards reuse the .type class, so an
     // unscoped ".type" query would clear the printer-type selection (and vice versa).
+    function selectCutUI(cut) {
+      document.querySelectorAll("#cuts .type").forEach(el => el.classList.toggle("sel", el.dataset.cut === cut));
+      const radio = document.querySelector(`input[name=pcut][value="${cut}"]`);
+      if (radio) radio.checked = true;
+    }
     function selectModeUI(mode) {
       document.querySelectorAll("#modes .type").forEach(el => el.classList.toggle("sel", el.dataset.mode === mode));
       const radio = document.querySelector(`input[name=pmode][value="${mode}"]`);
@@ -274,6 +288,7 @@
       return {
         activeType: currentType,
         printMode: currentMode,
+        cutCommand: currentCut,
         billPrinters: pickedPrinters("billPrinters"),
         kotPrinters: pickedPrinters("kotPrinters"),
         profiles: cfg.profiles,
@@ -294,6 +309,9 @@
         fillForm(currentType);
       });
     });
+    document.querySelectorAll("input[name=pcut]").forEach(r => {
+      r.addEventListener("change", () => { currentCut = r.value; selectCutUI(currentCut); });
+    });
     document.querySelectorAll("input[name=pmode]").forEach(r => {
       r.addEventListener("change", () => { currentMode = r.value; selectModeUI(currentMode); });
     });
@@ -302,6 +320,7 @@
       cfg = await window.printSettings.save(buildCfg());
       selectTypeUI(cfg.activeType); currentType = cfg.activeType; fillForm(currentType);
       currentMode = cfg.printMode || "raster"; selectModeUI(currentMode);
+      currentCut = cfg.cutCommand === "star" ? "star" : "escpos"; selectCutUI(currentCut);
       renderPrinterList("billPrinters", cfg.billPrinters || []);
       renderPrinterList("kotPrinters", cfg.kotPrinters || []);
       setStatus("Saved ✓ (" + cfg.activeType + ", " + (currentMode === "escpos" ? "ESC/POS" : "Raster") + ")", "ok");
@@ -389,6 +408,8 @@
       fillForm(currentType);
       currentMode = cfg.printMode === "escpos" ? "escpos" : "raster";
       selectModeUI(currentMode);
+      currentCut = cfg.cutCommand === "star" ? "star" : "escpos";
+      selectCutUI(currentCut);
       renderLayoutStatus(await window.printSettings.layoutStatus());
       await loadPrinters();
     })();
