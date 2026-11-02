@@ -122,6 +122,7 @@ const add = (name, mutate, expectDiff) => {
 };
 
 add("delivery: everything on", () => {});
+add("delivery: prebooked slot (wraps on 58mm)", (b) => { b.prebooking_time = "Thu, 17 Sep, 5:30 PM - 7:00 PM"; });
 add("dine-in: table number, nothing optional", (b) => {
   b.type = " Table 5"; b.table_number = 5; b.table_name = null;
   b.customer_name = null; b.customer_phone = null; b.delivery_address = "";

@@ -81,6 +81,7 @@ async function buildInvoiceHtml(order, srcWidth, fullArabic = false) {
   .kv .n{ flex-shrink:0; font-family:monospace; text-align:right; min-width:56px; }
   .pay{ border:1px solid #000; margin-top:6px; }
   .pay .kv{ border-bottom:1px solid #000; } .pay .kv:last-child{ border-bottom:none; }
+  .preb{ text-align:center; font-weight:bold; margin:2px 0 6px; }
   .cust{ text-align:center; margin-top:6px; letter-spacing:1px; }
   .thanks{ text-align:center; font-weight:bold; margin-top:5px; }
 </style></head>
@@ -97,6 +98,7 @@ async function buildInvoiceHtml(order, srcWidth, fullArabic = false) {
     <span>${fullArabic ? "ر الفاتورة" : "Invoice #"}<br><span class="mono">${esc(invoiceNo)}</span></span>
     <span class="r">${typeText}<br><span class="mono">${esc(dateTime)}</span></span>
   </div>
+  ${order.prebooking_time ? `<div class="preb">${fullArabic ? "حجز مسبق / Prebooked" : "Prebooked"}: ${esc(order.prebooking_time)}</div>` : ""}
   <table class="items">
     <tr>${th("Total", "الإجمالي", "ctot")}${th("Price", "سعر", "cprice")}${th("Qty", "الكمية", "cqty")}${th("Description", "الوصف")}</tr>
     ${rows}

@@ -96,6 +96,7 @@ async function buildUaeInvoiceHtml(order, srcWidth, fullArabic = false) {
   <div class="info">
     <div>Bill No: <span class="mono">${esc(invoiceNo)}</span></div>
     ${dateTime ? `<div>Date: <span class="mono">${esc(dateTime)}</span></div>` : ""}
+    ${order.prebooking_time ? `<div class="b">${fullArabic ? "حجز مسبق / Prebooked" : "Prebooked"}: ${esc(order.prebooking_time)}</div>` : ""}
   </div>
   <table class="items">
     <tr><th class="cdesc">Item's</th><th class="cn cprice">Price</th><th class="cn ctot">Total</th></tr>

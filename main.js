@@ -271,6 +271,15 @@ function convertOrderToEscPos(order) {
   // When the order was placed. The KOT had no time at all, so the kitchen could
   // not tell a fresh ticket from one that had been sitting on the spike.
   if (order.time) buffer += textLine(`Time : ${to12Hour(order.time)}`);
+  // When a prebooked order is due ("Thu, 17 Sep, 7:30 PM", from the web
+  // payload). Bold: the kitchen must not cook it now. Wrapped because a slot
+  // range runs past 32 columns on a 58mm roll.
+  if (order.prebooking_time) {
+    buffer += BOLD_ON;
+    escposWrap(replaceSpecialChars(`Prebooked: ${order.prebooking_time}`), WIDTH)
+      .forEach((ln) => { buffer += textLine(ln); });
+    buffer += BOLD_OFF;
+  }
 
   if(order.notes) {
       buffer += textLine(" ");
@@ -414,6 +423,13 @@ function convertBillToEscPos(bill) {
 
   buffer += pair(`Type : ${bill.type}`, "");
   if(bill.payment_method) buffer += pair(`Pay  : ${bill.payment_method}`, "");
+  // When a prebooked order is due — same line as the KOT.
+  if (bill.prebooking_time) {
+    buffer += BOLD_ON;
+    escposWrap(replaceSpecialChars(`Prebooked: ${bill.prebooking_time}`), WIDTH)
+      .forEach((ln) => { buffer += textLine(ln); });
+    buffer += BOLD_OFF;
+  }
   
   // Customer / Delivery Info
   if (bill.customer_name || bill.customer_phone || bill.delivery_address) {

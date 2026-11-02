@@ -148,6 +148,9 @@
     { key: "order_type", group: "Order", label: "Order type", get: (b) => str(b.type) },
     { key: "table", group: "Order", label: "Table", get: (b) => str(b.table_name) || (b.table_number ? "Table " + b.table_number : "") },
     { key: "payment_method", group: "Order", label: "Payment method", get: (b) => str(b.payment_method) },
+    // "Thu, 17 Sep, 7:30 PM" (or a "from - to" slot), set by the web /bill and
+    // /kot payloads only for a prebooked order.
+    { key: "prebooking_time", group: "Order", label: "Prebooked for", get: (b) => str(b.prebooking_time) },
     { key: "notes", group: "Order", label: "Order notes", get: (b) => str(b.notes) },
     { key: "generated_at", group: "Order", label: "Printed at", get: (b) => generatedStamp(b.generated_at) },
 
@@ -199,6 +202,7 @@
     { key: "customer_phone", label: "customer phone is known" },
     { key: "delivery_address", label: "there is a delivery address" },
     { key: "payment_method", label: "payment method is set" },
+    { key: "prebooking_time", label: "the order is prebooked" },
     { key: "fssai", label: "FSSAI number is set" },
     { key: "tax_no", label: "GST / VAT number is set" },
     { key: "trn", label: "TRN is set" },
@@ -1169,6 +1173,7 @@
       { id: "dt", type: "row", cells: [{ text: "Date : {date}" }, { text: "Time: {time}", align: "right" }] },
       { id: "type", type: "text", text: "Type : {order_type}" },
       { id: "pay", type: "text", text: "Pay  : {payment_method}" },
+      { id: "preb", type: "text", text: "Prebooked: {prebooking_time}", style: { bold: true }, when: { has: "prebooking_time" } },
       { id: "cust", type: "group", label: "Customer details", when: { has: "customer" }, blocks: [
         { id: "c0", type: "rule" },
         { id: "c1", type: "text", text: "Customer Details:", style: { bold: true } },
@@ -1229,6 +1234,7 @@
       { id: "kord", type: "text", text: "Order: #{order_id}" },
       { id: "ktype", type: "text", text: "Type : {order_type}" },
       { id: "ktime", type: "text", text: "Time : {time}" },
+      { id: "kpreb", type: "text", text: "Prebooked: {prebooking_time}", style: { bold: true }, when: { has: "prebooking_time" } },
       { id: "knotes", type: "group", label: "Order notes", when: { has: "notes" }, blocks: [
         { id: "kn0", type: "space", lines: 1 },
         { id: "kn1", type: "text", text: "Order Notes:", style: { bold: true } },
@@ -1292,6 +1298,7 @@
     display_id: "43-06/09/2026",
     type: "Takeaway",
     payment_method: "upi",
+    prebooking_time: "Sun, 6 Sep, 5:30 PM - 7:00 PM",
     notes: "Extra napkins please",
     delivery_address: "",
     delivery_location: null,
@@ -1327,6 +1334,7 @@
     id: b.id, display_id: b.display_id, created_at: b.created_at, time: b.time,
     table_number: b.table_number, table_name: b.table_name, type: b.type, notes: b.notes,
     customer_name: b.customer_name, customer_phone: b.customer_phone,
+    prebooking_time: b.prebooking_time,
     items: b.order_items.map((it, i) => Object.assign({}, it, i === 0 ? { notes: "less spicy" } : {})),
     generated_at: b.generated_at,
   });
