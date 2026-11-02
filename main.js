@@ -929,6 +929,20 @@ async function printTestSlip(which = "bill", opts = {}) {
     // Test Print calibrates width/scale (physical). Layout + Full Arabic now come
     // from the dashboard, but the locally-cached print-config values still preview
     // here for machines that used them before the settings moved to the web.
+    // A custom layout (a draft from the Bill Layout window, or the one this PC
+    // prints with) is tested the way raster mode prints it.
+    const testOrder = opts.order || (isBill ? SAMPLE_ORDER : sampleKot("delivery"));
+    const testTpl = opts.template || (isBill ? activeBillTemplate(testOrder) : activeKotTemplate(testOrder));
+    if (testTpl) {
+      log.info(`Test print: raster mode, custom ${isBill ? "bill" : "KOT"} layout${opts.template ? " (draft)" : ""}`);
+      const bytes = await buildTemplateRaster(testTpl, testOrder, win);
+      const filename = "temp_printer_test.bin";
+      const filePath = app.isPackaged ? path.join(process.resourcesPath, filename) : path.join(__dirname, filename);
+      fs.writeFileSync(filePath, bytes);
+      const exePath = app.isPackaged ? path.join(process.resourcesPath, "print-raw.exe") : path.join(__dirname, "print-raw.exe");
+      await sendToPrinters(exePath, filePath, testTargets, `test-${which}`);
+      return describeTargets(testTargets);
+    }
     let injectArabic = false;
     if (isCustomBillLayout(printConfig.billLayout)) {
       const html = await buildBillLayoutHtml(SAMPLE_ORDER, RASTER_SRC_WIDTH, printConfig.fullArabic, printConfig.billLayout);
@@ -1364,6 +1378,97 @@ async function buildTemplateEscPos(tpl, bill) {
   return Buffer.from(BillTemplate.physToEscPos(phys, { paper: printConfig.activeType, cut: cutBytes() }), "latin1");
 }
 
+// Raster mode with a custom layout: the same layout as the ESC/POS path, but its
+// text is drawn as pictures in the hidden window, so Chinese / Arabic names and
+// symbols like "×" print instead of being dropped by the printer's font. QR codes,
+// logos and the cut still go out as the ESC/POS path sends them. Every run of text
+// between two of those is one picture, the full printhead wide.
+async function buildTemplateRaster(tpl, bill, win) {
+  const cols = escposCharsPerLine();
+  const paper = printConfig.activeType;
+  // Keep every character: the picture can draw what the printer's font can't.
+  const keepAll = (v) => (v == null ? "" : String(v));
+  const lines = BillTemplate.resolveBill(tpl, bill, { paper, sanitize: keepAll });
+  await resolveImageLines(lines);
+  const phys = BillTemplate.fitLines(lines, cols);
+
+  // [{ run: [lines] } | { line }] in print order.
+  const parts = [];
+  phys.forEach((line) => {
+    if (line.t === "qr" || line.t === "image" || line.t === "cut") { parts.push({ line }); return; }
+    const last = parts[parts.length - 1];
+    if (last && last.run) last.run.push(line);
+    else parts.push({ run: [line] });
+  });
+  const runs = parts.filter((p) => p.run);
+
+  const W = RASTER_WIDTH;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+    html, body { margin:0; padding:0; background:#fff; }
+    .run { width:${W}px; color:#000; font-family:Consolas,"Courier New",monospace; overflow:hidden; }
+    .pl { white-space:pre; transform-origin:0 50%; }
+    .b { font-weight:700; }
+    .u { text-decoration:underline; }
+    .inv { background:#000; color:#fff; }
+    .wrap-wide { display:inline-block; vertical-align:bottom; text-align:left; }
+    .wrap-wide > span { display:inline-block; transform-origin:0 100%; }
+    .sz-wide { transform:scaleX(2); }
+    .sz-big { transform:scale(2,2); }
+    .sz-tall { display:inline-block; transform:scaleY(2); transform-origin:0 100%; }
+    #probe { position:absolute; visibility:hidden; white-space:pre; font-family:Consolas,"Courier New",monospace; font-size:20px; }
+  </style></head><body><span id="probe">${"0".repeat(cols)}</span>${
+    runs.map((p, i) => `<div class="run" id="run-${i}">${BillTemplate.physToHtml(p.run, { paper })}</div>`).join("")
+  }</body></html>`;
+  const tmpHtml = app.isPackaged
+    ? path.join(process.resourcesPath, "temp_template_raster.html")
+    : path.join(__dirname, "temp_template_raster.html");
+  fs.writeFileSync(tmpHtml, html);
+  win.webContents.setZoomFactor(1);
+  await win.loadFile(tmpHtml);
+  await win.webContents.executeJavaScript("(async()=>{try{await document.fonts.ready}catch(e){}return true})()");
+
+  // Font A: `cols` characters fill the printhead and a line is two characters
+  // tall. A line wider than the paper (a Chinese character is two columns wide
+  // on screen, one in the layout) is squeezed to fit rather than cut off.
+  const rects = await win.webContents.executeJavaScript(`(() => {
+    const W = ${W};
+    const probe = document.getElementById('probe');
+    const size = 20 * W / probe.getBoundingClientRect().width;
+    const ch = W / ${cols};
+    document.querySelectorAll('.run').forEach((r) => { r.style.fontSize = size + 'px'; r.style.lineHeight = (ch * 2) + 'px'; });
+    document.querySelectorAll('.pl').forEach((el) => {
+      if (el.classList.contains('h2')) el.style.lineHeight = (ch * 4) + 'px';
+      if (el.scrollWidth > W) el.style.transform = 'scaleX(' + (W / el.scrollWidth) + ')';
+    });
+    void document.body.offsetHeight;
+    return Array.from(document.querySelectorAll('.run')).map((r) => {
+      const b = r.getBoundingClientRect();
+      return { x: Math.floor(b.left), y: Math.floor(b.top + window.scrollY), width: W, height: Math.ceil(b.height) };
+    });
+  })()`);
+  const docH = rects.reduce((m, r) => Math.max(m, r.y + r.height), 0);
+  win.setContentSize(W + 20, Math.min(docH + 20, 6000));
+  await waitForPaint(win);
+
+  const bands = [];
+  for (const r of rects) {
+    if (!r.height) { bands.push(Buffer.alloc(0)); continue; }
+    let img = await win.webContents.capturePage({ x: r.x, y: r.y, width: r.width, height: r.height });
+    if (img.getSize().width !== W) img = img.resize({ width: W, quality: "best" });
+    const size = img.getSize();
+    bands.push(Buffer.concat([Buffer.from("\x1b\x61\x00", "latin1"), rasterBands(img.toBitmap(), size.width, size.height)]));
+  }
+
+  let runIdx = 0;
+  const out = [Buffer.from([0x1b, 0x40])];
+  parts.forEach((p) => {
+    if (p.run) { out.push(bands[runIdx++]); return; }
+    // physToEscPos opens with ESC @, which only resets the style: harmless here.
+    out.push(Buffer.from(BillTemplate.physToEscPos([p.line], { paper, cut: cutBytes() }), "latin1"));
+  });
+  return Buffer.concat(out);
+}
+
 // A payload that carries the account's layout keeps this PC's copy current even
 // when the API is unreachable — but never over a local save still waiting to be
 // pushed, which is the newer of the two.
@@ -1671,6 +1776,14 @@ function createWindow() {
 
   buildAppMenu();
 
+  // The page names the window; add the app version so support can read it
+  // off a screenshot.
+  mainWindow.setTitle(`Cravings.live · v${app.getVersion()}`);
+  mainWindow.on("page-title-updated", (e, title) => {
+    e.preventDefault();
+    mainWindow.setTitle(`${title} · v${app.getVersion()}`);
+  });
+
   mainWindow.loadURL("https://cravings.live/");
 
   // Restore the saved mute state, and re-apply after every navigation/reload so
@@ -1780,6 +1893,17 @@ function createWindow() {
                   escPosBuffer = isBill
                       ? await buildEscPosBill(orderData)
                       : await buildEscPosKot(orderData);
+              } else if (isBill ? activeBillTemplate(orderData) : activeKotTemplate(orderData)) {
+                  // Raster mode + this PC prints the custom layout: draw that layout.
+                  const tpl = isBill ? activeBillTemplate(orderData) : activeKotTemplate(orderData);
+                  log.info(`Using custom ${isBill ? "bill" : "KOT"} layout raster print`);
+                  try {
+                      escPosBuffer = await buildTemplateRaster(tpl, orderData, backgroundWindow);
+                  } catch (e) {
+                      // A broken layout must never cost a partner a bill.
+                      log.error("Custom layout raster failed; printing it as ESC/POS text instead", e);
+                      escPosBuffer = isBill ? await buildEscPosBill(orderData) : await buildEscPosKot(orderData);
+                  }
               } else if (isBill && isCustomBillLayout(layout)) {
                   if (webRendered) {
                       // The live /bill page already rendered this layout — capture it as-is.
@@ -2135,6 +2259,7 @@ function buildAppMenu() {
         },
       ],
     },
+    { label: `v${app.getVersion()}`, enabled: false },
   ]));
 }
 

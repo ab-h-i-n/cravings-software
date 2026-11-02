@@ -494,11 +494,30 @@
     }
   }
 
+  // An add-on row from the web payload is named "Add-on: Fried Egg ×2" and priced
+  // for all of them (one of the dish). Print the count in the Qty column instead —
+  // name "Add-on: Fried Egg", qty = dish qty × 2, price = one add-on — so the line
+  // amount (qty × price) is unchanged.
+  function addonRow(it) {
+    if (!it || !it.is_addon) return it;
+    const m = /\s*[×x]\s*(\d+)\s*$/.exec(str(it.name));
+    if (!m) return it;
+    const n = parseInt(m[1], 10) || 1;
+    return Object.assign({}, it, {
+      name: str(it.name).slice(0, m.index),
+      quantity: (Number(it.quantity) || 1) * n,
+      price: (Number(it.price) || 0) / n,
+    });
+  }
+
+  // The separator goes between dishes, never between a dish and its add-ons.
+  const ruleAfter = (rows, idx) => idx < rows.length - 1 && !(rows[idx + 1] && rows[idx + 1].is_addon);
+
   function resolveItems(bk, list, ctx, out, ghost, groupId) {
     const emit = (line) => out.push(tagLine(line, bk, ghost, groupId));
     const rowStyle = bk.rowStyle || {};
     const nameStyle = bk.nameStyle || null;
-    const sample = list.length ? list : [{ name: "(item)", price: 0, quantity: 1 }];
+    const sample = list.length ? list.map(addonRow) : [{ name: "(item)", price: 0, quantity: 1 }];
     if (bk.layout === "columns") {
       const columns = normalizeColumns(bk.columns);
       if (bk.header !== false) {
@@ -512,7 +531,7 @@
           return { segs: fillSegs([{ v: "{" + col.key + "}" }], ctx, st).segs, align: col.align, width: col.width };
         }) });
         itemExtras(bk, it, ctx, emit);
-        if (bk.separator && idx < sample.length - 1) emit({ t: "rule", ch: "-" });
+        if (bk.separator && ruleAfter(sample, idx)) emit({ t: "rule", ch: "-" });
         ctx.item = null;
       });
       return;
@@ -530,7 +549,7 @@
         emit({ t: "row", cells: [{ segs: left, align: "left", width: "flex" }, { segs: amount, align: "right", width: null }] });
       }
       itemExtras(bk, it, ctx, emit);
-      if (bk.separator && idx < sample.length - 1) emit({ t: "rule", ch: "-" });
+      if (bk.separator && ruleAfter(sample, idx)) emit({ t: "rule", ch: "-" });
       ctx.item = null;
     });
   }
@@ -559,12 +578,12 @@
       });
     });
     if (!out.length) return DEFAULT_COLUMNS.map((d) => Object.assign({}, d));
-    if (!out.some((o) => o.key === "name")) out.splice(Math.min(1, out.length), 0, Object.assign({}, DEFAULT_COLUMNS[1]));
+    if (!out.some((o) => o.key === "name")) out.splice(Math.min(1, out.length), 0, Object.assign({}, DEFAULT_COLUMNS.find((d) => d.key === "name")));
     return out;
   }
   const DEFAULT_COLUMNS = [
-    { key: "qty", label: "Qty", width: 4, align: "left" },
     { key: "name", label: "Item", width: "flex", align: "left" },
+    { key: "qty", label: "Qty", width: 4, align: "right" },
     { key: "price", label: "Price", width: 8, align: "right" },
     { key: "amount", label: "Amount", width: 9, align: "right" },
   ];
@@ -1278,7 +1297,9 @@
     delivery_boy: { name: "Suresh", phone: "9700099900" },
     generated_at: "06/09/2026, 1:41:12 PM",
     order_items: [
-      { name: "Chicken Biryani", price: 230, quantity: 2, category: "Biryani" },
+      // An add-on row the way the web sends it: priced for one of the dish.
+      { name: "Chicken Biryani", price: 200, quantity: 2, category: "Biryani" },
+      { name: "Add-on: Extra Raita ×2", price: 30, quantity: 2, category: "", is_addon: true },
       { name: "Raita", price: 40, quantity: 1, category: "Sides" },
       { name: "Mango Lassi", price: 90, quantity: 1, category: "Drinks" },
     ],

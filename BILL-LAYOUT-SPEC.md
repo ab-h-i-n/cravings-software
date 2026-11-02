@@ -257,8 +257,8 @@ nothing (caption included). See §10.
   "layout": "inline",                    // or "columns"
   "format": "{qty} x {name}",            // inline only; item fields allowed
   "showAmount": true,                    // inline only; false = no amount column (kitchen ticket)
-  "columns": [ { "key": "qty", "label": "Qty", "width": 4, "align": "left" },
-               { "key": "name",   "label": "Item",   "width": "flex" },
+  "columns": [ { "key": "name",   "label": "Item",   "width": "flex" },
+               { "key": "qty",    "label": "Qty",    "width": 4,  "align": "right" },
                { "key": "price",  "label": "Price",  "width": 8,  "align": "right" },
                { "key": "amount", "label": "Amount", "width": 9,  "align": "right" } ],
   "header": true, "headerStyle": { "bold": true },
@@ -270,6 +270,11 @@ nothing (caption included). See §10.
 Column keys are `qty | name | price | amount`; the `name` column always flexes.
 If `columns` is missing or empty, use the four defaults above. If no `name`
 column is listed, insert the default one at position 1.
+
+An add-on row (`is_addon: true`, name ending in ` ×N`, priced for N of them on
+one dish) prints without the ` ×N`, with qty = dish qty × N and price = one
+add-on, so the line amount is unchanged. A `separator` is never printed before
+an add-on row: the line goes between dishes, not between a dish and its add-ons.
 
 #### `charges` — one row per extra charge
 ```jsonc

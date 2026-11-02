@@ -112,7 +112,11 @@ function parseEscPos(buf, cols) {
 }
 
 // ---------------------------------------------------------------- payloads
+// The sample's add-on row is left out: the built-in bill prints add-ons as plain
+// items, the layout puts their count in the Qty column (a deliberate difference).
+const noAddons = (list) => list.filter((it) => !it.is_addon);
 const base = JSON.parse(JSON.stringify(BillTemplate.SAMPLE_BILL));
+base.order_items = noAddons(base.order_items);
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const variants = [];
 const add = (name, mutate, expectDiff) => {
@@ -164,7 +168,9 @@ add("wide date and time on 58 mm", (b) => { b.created_at = "06/09/2026"; b.time 
 const kotVariants = [];
 const addKot = (name, mutate, expectDiff) => {
   const k = clone(BillTemplate.SAMPLE_KOTS.delivery);
+  k.items = noAddons(k.items);
   mutate(k);
+  k.items = noAddons(k.items);
   kotVariants.push({ name, bill: k, expectDiff: !!expectDiff });
 };
 addKot("kot delivery: notes + item note", () => {});
