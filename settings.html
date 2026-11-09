@@ -72,7 +72,7 @@
 <body>
   <div class="wrap">
     <h1>Printer Settings</h1>
-    <p class="sub">Paper size, text scale and the ESC/POS bill layout for this printer. Tax&nbsp;Invoice / UAE layouts and Full Arabic are set in the web dashboard (Settings &rarr; Store &rarr; Bill Printing).</p>
+    <p class="sub">Paper size and the ESC/POS bill layout for this printer. Tax&nbsp;Invoice / UAE layouts and Full Arabic are set in the web dashboard (Settings &rarr; Store &rarr; Bill Printing).</p>
 
     <div class="card">
       <span class="lbl">Printer type</span>
@@ -153,12 +153,7 @@
       <div class="row">
         <div class="rowhead"><span class="lbl" style="margin:0">Width (dots)</span><input type="number" id="widthNum" min="120" max="1200" step="8"></div>
         <input type="range" id="widthRange" min="120" max="1200" step="8">
-        <div class="hint">Printhead width. 58 mm ≈ 384, 80 mm ≈ 576. Increase until the test bar just fills the paper.</div>
-      </div>
-      <div class="row">
-        <div class="rowhead"><span class="lbl" style="margin:0">Scale (text size)</span><input type="number" id="scaleNum" min="1" max="3" step="0.05"></div>
-        <input type="range" id="scaleRange" min="1" max="3" step="0.05">
-        <div class="hint">Bigger = larger text (long bilingual lines wrap sooner). <span id="srcInfo"></span></div>
+        <div class="hint">Printhead width. 58 mm ≈ 384, 80 mm ≈ 576. Increase until the test bar just fills the paper.<br>Bill size is set in your dashboard: Settings → Printing → Printers → Configure → Size.</div>
       </div>
     </div>
 
@@ -174,8 +169,7 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const widthNum = $("widthNum"), widthRange = $("widthRange");
-    const scaleNum = $("scaleNum"), scaleRange = $("scaleRange");
-    const status = $("status"), srcInfo = $("srcInfo");
+    const status = $("status");
     let cfg = null, currentType = "80mm", currentMode = "raster", currentCut = "escpos", currentKind = "escpos";
 
     const clampW = (w) => Math.min(1200, Math.max(120, Math.round((Number(w) || 384) / 8) * 8));
@@ -257,10 +251,6 @@
           name: row.querySelector('input[type=checkbox]').value,
           copies: Math.min(5, Math.max(1, parseInt(row.querySelector(".cp").value, 10) || 1)),
         }));
-    function updateSrcInfo() {
-      const w = clampW(widthNum.value), s = clampS(scaleNum.value);
-      srcInfo.textContent = "Layout ≈ " + Math.round(w / s) + " px.";
-    }
     function selectTypeUI(type) {
       document.querySelectorAll("#types .type").forEach(el => el.classList.toggle("sel", el.dataset.type === type));
       const radio = document.querySelector(`input[name=ptype][value="${type}"]`);
@@ -292,11 +282,11 @@
     function fillForm(type) {
       const p = cfg.profiles[type] || { rasterWidth: type === "58mm" ? 384 : 576, scale: 1.6 };
       widthNum.value = p.rasterWidth; widthRange.value = p.rasterWidth;
-      scaleNum.value = p.scale; scaleRange.value = p.scale;
-      updateSrcInfo();
     }
     function stash(type) {
-      cfg.profiles[type] = { rasterWidth: clampW(widthNum.value), scale: clampS(scaleNum.value) };
+      // Size comes from the dashboard: keep the scale this profile already has.
+      const prev = cfg.profiles[type] || {};
+      cfg.profiles[type] = { rasterWidth: clampW(widthNum.value), scale: clampS(prev.scale) };
     }
     function buildCfg() {
       stash(currentType);
@@ -314,10 +304,8 @@
     }
 
     // sync slider <-> number
-    widthRange.addEventListener("input", () => { widthNum.value = widthRange.value; updateSrcInfo(); });
-    widthNum.addEventListener("input", () => { widthRange.value = widthNum.value; updateSrcInfo(); });
-    scaleRange.addEventListener("input", () => { scaleNum.value = scaleRange.value; updateSrcInfo(); });
-    scaleNum.addEventListener("input", () => { scaleRange.value = scaleNum.value; updateSrcInfo(); });
+    widthRange.addEventListener("input", () => { widthNum.value = widthRange.value; });
+    widthNum.addEventListener("input", () => { widthRange.value = widthNum.value; });
 
     document.querySelectorAll("input[name=ptype]").forEach(r => {
       r.addEventListener("change", () => {
