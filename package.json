@@ -1,6 +1,6 @@
 {
   "name": "cravings-desktop",
-  "version": "1.6.12",
+  "version": "1.6.13",
   "description": "Desktop application for Cravings.live",
   "homepage": "https://www.cravings.live",
   "main": "main.js",
@@ -17,7 +17,7 @@
   "license": "ISC",
   "build": {
     "appId": "live.cravings.desktop",
-    "productName": "Cravings.live",
+    "productName": "Menuthere",
     "publish": {
       "provider": "github",
       "owner": "ab-h-i-n",
@@ -31,9 +31,11 @@
       "billInvoiceUae.js",
       "deliveryBoyBlock.js",
       "billTemplate.js",
-    "starGraphic.js",
+      "starGraphic.js",
       "designer.html",
       "designer-preload.js",
+      "update.html",
+      "update-preload.js",
       "settings.html",
       "settings-preload.js",
       "test-receipt.html",
@@ -50,7 +52,8 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "executableName": "Cravings.live"
     },
     "mac": {
       "target": "dmg",
@@ -63,6 +66,13 @@
       ],
       "icon": "build/icon.png",
       "maintainer": "NoTime <notimeservices@gmail.com>"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "shortcutName": "Menuthere",
+      "uninstallDisplayName": "Menuthere",
+      "artifactName": "Menuthere-Setup-${version}.${ext}"
     }
   },
   "devDependencies": {

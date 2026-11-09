@@ -1,6 +1,11 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, Tray, nativeImage, net } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, Menu, Tray, nativeImage, net, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
+
+// 1.6.13: Cravings.live is now Menuthere (build.productName). The data folder
+// (sign-in, printers, layouts, logs) is named after the package name,
+// "cravings-desktop", which stays as it is, so every install keeps its data
+// across the rename. Never rename "name" in package.json.
 const { autoUpdater } = require("electron-updater");
 const { execFile } = require("child_process");
 const { arabicLabelScript } = require("./arabicLabels");
@@ -30,7 +35,7 @@ let mainWindow;
 // --- ERROR LOGGING ---
 function logError(error) {
   try {
-    const logPath = path.join(app.getPath("desktop"), "cravings-log.txt");
+    const logPath = path.join(app.getPath("desktop"), "menuthere-log.txt");
     const timestamp = new Date().toISOString();
     const logMessage = `${timestamp} - ERROR: ${error.toString()}\n\n`;
     fs.appendFileSync(logPath, logMessage);
@@ -62,6 +67,77 @@ app.on("child-process-gone", (_e, details) => {
 });
 
 // --- AUTO-UPDATE LOGIC ---
+// A small Menuthere window shows the download (progress, size, speed), then
+// "Restart now" / "Later" (Later installs on the next quit), and on a failure
+// says what went wrong with a way through: try again, or download the
+// installer. Background check failures (offline, no release for this OS) stay
+// in the log; the window only appears once an update is actually found.
+const RELEASES_URL = "https://github.com/ab-h-i-n/cravings-software/releases/latest";
+let updateWindow = null;
+let updateState = null;
+let updateListenersSet = false;
+
+function updateLogo() {
+  try {
+    return nativeImage.createFromPath(path.join(__dirname, "build/icon.png")).resize({ width: 80 }).toDataURL();
+  } catch (e) {
+    return "";
+  }
+}
+
+function setUpdateState(state, { show = true } = {}) {
+  updateState = { ...state, logo: updateLogo() };
+  if (updateWindow && !updateWindow.isDestroyed()) {
+    updateWindow.webContents.send("update:state", updateState);
+    return;
+  }
+  if (!show) return;
+  updateWindow = new BrowserWindow({
+    width: 440,
+    height: 236,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    autoHideMenuBar: true,
+    title: "Menuthere update",
+    icon: path.join(__dirname, "build/icon.png"),
+    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    show: false,
+    webPreferences: { preload: path.join(__dirname, "update-preload.js"), contextIsolation: true, nodeIntegration: false },
+  });
+  updateWindow.setMenuBarVisibility(false);
+  updateWindow.loadFile(path.join(__dirname, "update.html"));
+  updateWindow.once("ready-to-show", () => updateWindow && !updateWindow.isDestroyed() && updateWindow.show());
+  updateWindow.on("closed", () => { updateWindow = null; });
+}
+
+ipcMain.handle("update:state", () => updateState);
+ipcMain.on("update:later", () => {
+  if (updateWindow && !updateWindow.isDestroyed()) updateWindow.close();
+});
+ipcMain.on("update:retry", () => {
+  setUpdateState({ phase: "downloading", version: updateState && updateState.version, percent: 0 });
+  autoUpdater.checkForUpdates().catch((e) => log.warn("Update retry failed:", e && e.message));
+});
+ipcMain.on("update:download", () => {
+  shell.openExternal(RELEASES_URL).catch(() => {});
+});
+ipcMain.on("update:restart", () => {
+  setUpdateState({ ...updateState, phase: "installing" });
+  // Let the window paint, then quit and run the installer silently and
+  // reopen the app. The tray icon goes first, so nothing holds the app open.
+  setTimeout(() => {
+    try { if (tray && !tray.isDestroyed()) tray.destroy(); } catch (e) { /* gone */ }
+    try {
+      autoUpdater.quitAndInstall(true, true);
+    } catch (e) {
+      log.error("quitAndInstall failed:", e);
+      setUpdateState({ ...updateState, phase: "error", detail: String((e && e.message) || e) });
+    }
+  }, 400);
+});
+
 function checkForUpdates() {
   // The published releases are built for Windows 10+ (modern Electron), so a Win7/8
   // machine must stay on its legacy build — auto-updating would replace it with a
@@ -71,59 +147,80 @@ function checkForUpdates() {
     return;
   }
 
-  // 2. Configure electron-updater to use electron-log
   autoUpdater.logger = log;
   autoUpdater.logger.transports.file.level = "info";
+  autoUpdater.autoDownload = false; // downloaded explicitly below, once
+  autoUpdater.autoInstallOnAppQuit = true; // "Later" installs on the next quit
   log.info("App starting...");
 
-  // The rest of your event listeners are correct
-  autoUpdater.on("error", (err) => {
-    logError("Auto-update error: " + (err.message || err));
-    mainWindow.webContents.send("update-status", {
-      success: false,
-      message: "Error during update.",
+  if (!updateListenersSet) {
+    updateListenersSet = true;
+
+    autoUpdater.on("error", (err) => {
+      const detail = String((err && err.message) || err);
+      log.error("Auto-update error:", detail);
+      // Only in front of the partner when they are watching an update; a
+      // background check that fails (offline, no release for this OS) is noise.
+      if (updateWindow && !updateWindow.isDestroyed()) {
+        setUpdateState({ ...updateState, phase: "error", detail });
+      }
+      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setProgressBar(-1); } catch (e) { /* gone */ }
     });
-  });
 
-  autoUpdater.on("update-available", (info) => {
-    autoUpdater.downloadUpdate();
-    mainWindow.webContents.send("update-status", {
-      success: true,
-      message: "Downloading update... 🚀",
+    autoUpdater.on("update-available", (info) => {
+      log.info(`Update available: ${info.version}`);
+      setUpdateState({ phase: "downloading", version: info.version, percent: 0 });
+      autoUpdater.downloadUpdate().catch((e) => log.warn("Update download failed:", e && e.message));
     });
-  });
 
-  autoUpdater.on("update-not-available", () => {
-    log.info("Update not available.");
-  });
-
-  autoUpdater.on("download-progress", (progressObj) => {
-    const progressMessage = `Downloading new update - ${Math.round(
-      progressObj.percent
-    )}%`;
-    mainWindow.setProgressBar(progressObj.percent / 100);
-    mainWindow.webContents.send("update-status", {
-      success: true,
-      message: progressMessage,
+    autoUpdater.on("update-not-available", () => {
+      log.info("Update not available.");
     });
-  });
 
-  autoUpdater.on("update-downloaded", (info) => {
-    mainWindow.setProgressBar(-1);
-    dialog
-      .showMessageBox({
-        type: "info",
-        title: "Update Ready",
-        message: `Update for version ${info.version} is downloaded. The application will now restart to install it.`,
-        buttons: ["Restart Now"],
-      })
-      .then(() => {
-        autoUpdater.quitAndInstall();
-      });
-  });
+    autoUpdater.on("download-progress", (p) => {
+      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setProgressBar(p.percent / 100); } catch (e) { /* gone */ }
+      setUpdateState({
+        phase: "downloading",
+        version: updateState && updateState.version,
+        percent: p.percent,
+        transferred: p.transferred,
+        total: p.total,
+        bytesPerSecond: p.bytesPerSecond,
+      }, { show: false });
+    });
 
-  // Initiate the check for updates
-  autoUpdater.checkForUpdates();
+    autoUpdater.on("update-downloaded", (info) => {
+      try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setProgressBar(-1); } catch (e) { /* gone */ }
+      setUpdateState({ phase: "ready", version: info.version });
+    });
+  }
+
+  autoUpdater.checkForUpdates().catch((e) => log.warn("Update check failed:", e && e.message));
+}
+
+// --- "CRAVINGS.LIVE IS NOW MENUTHERE" ---
+// Shown once, the first time 1.6.13+ runs on a PC that had the app before
+// (a print-config.json in the kept data folder). A fresh install never had
+// the old name, so it never sees this.
+function showRebrandNoticeOnce() {
+  try {
+    const flag = path.join(app.getPath("userData"), "rebrand-menuthere-shown");
+    if (fs.existsSync(flag)) return;
+    fs.writeFileSync(flag, new Date().toISOString());
+    if (!fs.existsSync(printConfigPath())) return; // fresh install
+    dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+      type: "info",
+      title: "Menuthere",
+      icon: nativeImage.createFromPath(path.join(__dirname, "build/icon.png")),
+      message: "Cravings.live is now Menuthere",
+      detail:
+        "Same app, new name and logo. You are still signed in, and your printers and bill layouts are as you left them.\n\n" +
+        "Look for Menuthere on your desktop and in the Start menu.",
+      buttons: ["OK"],
+    }).catch(() => {});
+  } catch (e) {
+    log.warn("Rebrand notice skipped:", e.message);
+  }
 }
 
 // --- MAIN APPLICATION WINDOW ---
@@ -1965,7 +2062,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
-    title: "Cravings.live",
+    title: "Menuthere",
     frame: true,
     icon: path.join(__dirname, "build/icon.png"),
     webPreferences: {
@@ -1979,13 +2076,13 @@ function createWindow() {
 
   // The page names the window; add the app version so support can read it
   // off a screenshot.
-  mainWindow.setTitle(`Cravings.live · v${app.getVersion()}`);
+  mainWindow.setTitle(`Menuthere · v${app.getVersion()}`);
   mainWindow.on("page-title-updated", (e, title) => {
     e.preventDefault();
     mainWindow.setTitle(`${title} · v${app.getVersion()}`);
   });
 
-  mainWindow.loadURL("https://cravings.live/");
+  mainWindow.loadURL("https://menuthere.com/");
 
   // Restore the saved mute state, and re-apply after every navigation/reload so
   // the alarm can't come back unmuted when the dashboard reloads.
@@ -2494,7 +2591,7 @@ function createTray() {
   try {
     const img = nativeImage.createFromPath(path.join(__dirname, "build/icon.png"));
     tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
-    tray.setToolTip("Cravings.live");
+    tray.setToolTip("Menuthere");
     refreshTrayMenu();
     tray.on("double-click", () => openPrinterSettings());
   } catch (e) {
@@ -2678,6 +2775,8 @@ app.on("ready", () => {
   createWindow();
   createTray();
   checkForUpdates();
+  // Once the dashboard is up, so the notice sits on top of it.
+  setTimeout(showRebrandNoticeOnce, 2500);
   // Pick up a layout the Menuthere team (or another PC) saved to the account.
   // Later than the window, so the dashboard's own load is not competing with it.
   setTimeout(() => syncBillTemplate("startup").catch(() => {}), 6000);
