@@ -1681,8 +1681,15 @@ async function buildTemplateEscPos(tpl, bill) {
 // logos and the cut still go out as the ESC/POS path sends them. Every run of text
 // between two of those is one picture, the full printhead wide.
 async function buildTemplateRaster(tpl, bill, win) {
-  const cols = escposCharsPerLine();
+  const paperCols = escposCharsPerLine();
   const paper = printConfig.activeType;
+  // The dashboard's Size (Configure → Size, 50-150 %), as on Android
+  // (StarGraphic.layoutColsFor): bigger lays the layout out on fewer columns,
+  // so each character is wider across the same paper; smaller keeps the
+  // columns and draws them narrower, centred, for a printer that cuts off
+  // the edges.
+  const pct = dashboardSetup().scale;
+  const cols = pct <= 100 ? paperCols : Math.max(16, Math.round((paperCols * 100) / pct));
   // Keep every character: the picture can draw what the printer's font can't.
   const keepAll = (v) => (v == null ? "" : String(v));
   const lines = BillTemplate.resolveBill(tpl, bill, { paper, sanitize: keepAll });
@@ -1700,9 +1707,12 @@ async function buildTemplateRaster(tpl, bill, win) {
   const runs = parts.filter((p) => p.run);
 
   const W = RASTER_WIDTH;
+  // The width the text is drawn on: the whole printhead, or less when smaller.
+  const inner = pct < 100 ? Math.round((W * pct) / 100) : W;
+  const pad = Math.floor((W - inner) / 2);
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
     html, body { margin:0; padding:0; background:#fff; }
-    .run { width:${W}px; color:#000; font-family:Consolas,"Courier New",monospace; overflow:hidden; }
+    .run { width:${W}px; box-sizing:border-box; padding-left:${pad}px; color:#000; font-family:Consolas,"Courier New",monospace; overflow:hidden; }
     .pl { white-space:pre; transform-origin:0 50%; }
     .b { font-weight:700; }
     .u { text-decoration:underline; }
@@ -1729,13 +1739,14 @@ async function buildTemplateRaster(tpl, bill, win) {
   // on screen, one in the layout) is squeezed to fit rather than cut off.
   const rects = await win.webContents.executeJavaScript(`(() => {
     const W = ${W};
+    const inner = ${inner};
     const probe = document.getElementById('probe');
-    const size = 20 * W / probe.getBoundingClientRect().width;
-    const ch = W / ${cols};
+    const size = 20 * inner / probe.getBoundingClientRect().width;
+    const ch = inner / ${cols};
     document.querySelectorAll('.run').forEach((r) => { r.style.fontSize = size + 'px'; r.style.lineHeight = (ch * 2) + 'px'; });
     document.querySelectorAll('.pl').forEach((el) => {
       if (el.classList.contains('h2')) el.style.lineHeight = (ch * 4) + 'px';
-      if (el.scrollWidth > W) el.style.transform = 'scaleX(' + (W / el.scrollWidth) + ')';
+      if (el.scrollWidth > inner) el.style.transform = 'scaleX(' + (inner / el.scrollWidth) + ')';
     });
     void document.body.offsetHeight;
     return Array.from(document.querySelectorAll('.run')).map((r) => {
