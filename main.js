@@ -2456,16 +2456,82 @@ function createWindow() {
   });
 
   // Ctrl+Shift+P opens Printer Settings, Ctrl+Shift+L the Bill Layout window
-  // (both work even though the menu bar is hidden).
+  // (both work even though the menu bar is hidden). Ctrl+Shift+B (Cmd+Shift+B
+  // on a Mac) shows a URL bar to open another address in this window.
   mainWindow.webContents.on("before-input-event", (event, input) => {
     const key = (input.key || "").toLowerCase();
     if (input.control && input.shift && key === "p") openPrinterSettings();
     if (input.control && input.shift && key === "l") openDesignerWindow();
+    if ((input.control || input.meta) && input.shift && key === "b") {
+      event.preventDefault();
+      if (input.type === "keyDown") toggleUrlBar();
+    }
   });
 
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+// --- URL BAR (Ctrl+Shift+B) ---
+// A bar over the top of the dashboard, filled with the current address: edit
+// it and press Enter (or Go) to open that page here, Esc to close. Drawn in
+// its own shadow DOM so the page's styles can't reach it. Only http(s)
+// addresses; one typed without a scheme gets https://.
+function toggleUrlBar() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.executeJavaScript(`(() => {
+    const ID = "__menuthere_url_bar";
+    const old = document.getElementById(ID);
+    if (old) { old.remove(); return; }
+    const host = document.createElement("div");
+    host.id = ID;
+    host.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;";
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = \`
+      <style>
+        .bar { display:flex; gap:8px; align-items:center; padding:8px 10px; background:#18181b;
+               box-shadow:0 2px 10px rgba(0,0,0,.3); font:13px -apple-system,"Segoe UI",sans-serif; }
+        input { flex:1; min-width:0; height:32px; padding:0 10px; border:1px solid #3f3f46; border-radius:6px;
+                background:#27272a; color:#fafafa; font:inherit; outline:none; }
+        input:focus { border-color:#e84a1f; }
+        button { height:32px; padding:0 12px; border:0; border-radius:6px; font:inherit; cursor:pointer; }
+        .go { background:#e84a1f; color:#fff; }
+        .x { background:#3f3f46; color:#fafafa; }
+        .err { color:#fca5a5; white-space:nowrap; }
+      </style>
+      <div class="bar">
+        <input type="text" spellcheck="false" autocomplete="off" aria-label="Address" />
+        <span class="err" hidden>Enter an http(s) address</span>
+        <button class="go" type="button">Go</button>
+        <button class="x" type="button" aria-label="Close">Esc</button>
+      </div>\`;
+    const input = root.querySelector("input");
+    const err = root.querySelector(".err");
+    input.value = location.href;
+    const close = () => host.remove();
+    const go = () => {
+      let v = input.value.trim();
+      if (!v) return;
+      if (!/^[a-z][a-z0-9+.-]*:\\/\\//i.test(v)) v = "https://" + v;
+      let url;
+      try { url = new URL(v); } catch (e) { url = null; }
+      if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) { err.hidden = false; return; }
+      close();
+      location.href = url.href;
+    };
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); go(); }
+      if (e.key === "Escape") { e.preventDefault(); close(); }
+      if (err && !err.hidden && e.key !== "Enter") err.hidden = true;
+    });
+    root.querySelector(".go").addEventListener("click", go);
+    root.querySelector(".x").addEventListener("click", close);
+    document.documentElement.appendChild(host);
+    input.focus();
+    input.select();
+  })()`, true).catch((e) => log.warn("URL bar failed:", e.message));
 }
 
 // --- PRINTER SETTINGS WINDOW + TRAY ---
