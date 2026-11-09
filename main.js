@@ -202,22 +202,35 @@ function checkForUpdates() {
 // Shown once, the first time 1.6.13+ runs on a PC that had the app before
 // (a print-config.json in the kept data folder). A fresh install never had
 // the old name, so it never sees this.
+// Held here: a window nothing references can be garbage-collected and vanish.
+let rebrandWindow = null;
+
 function showRebrandNoticeOnce() {
   try {
     const flag = path.join(app.getPath("userData"), "rebrand-menuthere-shown");
     if (fs.existsSync(flag)) return;
     fs.writeFileSync(flag, new Date().toISOString());
     if (!fs.existsSync(printConfigPath())) return; // fresh install
-    dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
-      type: "info",
-      title: "Menuthere",
-      icon: nativeImage.createFromPath(path.join(__dirname, "build/icon.png")),
-      message: "Cravings.live is now Menuthere",
-      detail:
-        "Same app, new name and logo. You are still signed in, and your printers and bill layouts are as you left them.\n\n" +
-        "Look for Menuthere on your desktop and in the Start menu.",
-      buttons: ["OK"],
-    }).catch(() => {});
+    // A small window showing the change: the old logo and name -> the new.
+    const notice = (rebrandWindow = new BrowserWindow({
+      width: 460,
+      height: 340,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      autoHideMenuBar: true,
+      title: "Cravings.live is now Menuthere",
+      icon: path.join(__dirname, "build/icon.png"),
+      parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+      modal: false,
+      show: false,
+      webPreferences: { contextIsolation: true, nodeIntegration: false },
+    }));
+    notice.on("closed", () => { rebrandWindow = null; });
+    notice.setMenuBarVisibility(false);
+    notice.loadFile(path.join(__dirname, "rebrand.html"));
+    notice.once("ready-to-show", () => !notice.isDestroyed() && notice.show());
   } catch (e) {
     log.warn("Rebrand notice skipped:", e.message);
   }
