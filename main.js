@@ -8,6 +8,7 @@ const { buildInvoiceHtml } = require("./billInvoice");
 const { buildUaeInvoiceHtml } = require("./billInvoiceUae");
 const { deliveryBoyScript } = require("./deliveryBoyBlock");
 const BillTemplate = require("./billTemplate");
+const StarGraphic = require("./starGraphic");
 
 // 1. Import electron-log
 const log = require("electron-log");
@@ -481,17 +482,10 @@ function convertBillToEscPos(bill) {
   // 4. Items
   buffer += BOLD_ON + textLine("ITEMS") + BOLD_OFF;
   
+  // Item | Qty | Amount, drawn by the layout engine so the built-in bill and
+  // the default layout print the same table (add-ons: "* Add-on: …", count in Qty).
   if (bill.order_items && bill.order_items.length > 0) {
-      bill.order_items.forEach(item => {
-          const itemTotal = (item.quantity * item.price).toFixed(2);
-          const left = replaceSpecialChars(`${item.quantity} x ${item.name}`);
-          // Wrap the name ourselves so it breaks at spaces; the amount is
-          // right-aligned on the LAST line rather than pushed onto its own.
-          const lines = escposWrap(left, Math.max(1, WIDTH - itemTotal.length - 1));
-          lines.forEach((ln, i) => {
-              buffer += (i === lines.length - 1) ? pair(ln, itemTotal) : textLine(ln);
-          });
-      });
+      buffer += BillTemplate.itemsEscPos(bill, WIDTH, printConfig.activeType);
   }
   
   // 5. Extra Charges
@@ -665,7 +659,19 @@ const DEFAULT_PRINT_CONFIG = {
   //   "escpos"           — raw ESC/POS text in the printer's own font. Faster,
   //                        but DEFAULT layout only: no custom layouts, no Arabic,
   //                        no logos (the printer simply cannot render them).
+  //                        One layout only: the custom layout prints in
+  //                        raster mode.
   printMode: "raster",
+  // What the printer speaks:
+  //   "escpos" (default) — almost every receipt printer.
+  //   "star"             — Star TSP100 / TSP143 (Star Graphic): no fonts, so
+  //                        it always prints raster, sent as Star raster.
+  printerType: "escpos",
+  // 2 once the one-time print-mode migration (loadPrintConfig) has run.
+  printModeVersion: 0,
+  // Set once by the 1.6.10 migration on a PC that printed its custom layout
+  // in ESC/POS mode: it keeps doing so (see escposBlocksTemplate).
+  escposCustomLegacy: false,
   // Which paper-cut command ends every job:
   //   "escpos" (default) — GS V 66 0, Epson-style feed + cut.
   //   "star"             — ESC d 2, Star Line Mode full cut. Star printers (e.g.
@@ -711,6 +717,24 @@ const isValidCutCommand = (c) => c === "escpos" || c === "star";
 // The bytes that cut the paper on the configured printer (see cutCommand).
 function cutBytes() {
   return printConfig.cutCommand === "star" ? "\x1B\x64\x02" : "\x1D\x56\x42\x00";
+}
+
+// ---- The dashboard's custom-layout switch (payload custom_layout) ----
+// Settings -> Printing -> Layout -> "Print my custom layout" travels in every
+// /bill and /kot payload as `custom_layout`: true / false wins over this PC's
+// own switch for that document; null (never set on the dashboard) or an older
+// web build leaves this PC's switch as it was. Read per order, never stored.
+function customLayoutOn(order) {
+  const v = order && order.custom_layout;
+  return typeof v === "boolean" ? v : !!printConfig.billTemplateUseCustom;
+}
+
+// A finished raster job for the configured printer type: as built for an
+// ESC/POS printer, or the same pictures in Star Graphic commands.
+function forPrinterType(buf) {
+  if (!buf || printConfig.printerType !== "star") return buf;
+  log.info("Star printer: sending the receipt as Star Graphic raster");
+  return StarGraphic.fromEscPos(buf, RASTER_WIDTH);
 }
 
 // Bill layouts that render their own HTML from the order JSON (vs "default", which prints
@@ -778,6 +802,8 @@ function loadPrintConfig() {
       if (bp) cfg.billPrinters = bp;
       if (kp) cfg.kotPrinters = kp;
       if (parsed.printMode === "raster" || parsed.printMode === "escpos") cfg.printMode = parsed.printMode;
+      if (parsed.printerType === "star" || parsed.printerType === "escpos") cfg.printerType = parsed.printerType;
+      if (Number(parsed.printModeVersion) === 2) cfg.printModeVersion = 2;
       if (isValidCutCommand(parsed.cutCommand)) cfg.cutCommand = parsed.cutCommand;
       if (isValidBillLayout(parsed.billLayout)) cfg.billLayout = parsed.billLayout;
       const tpl = BillTemplate.normalizeTemplate(parsed.billTemplate);
@@ -785,6 +811,19 @@ function loadPrintConfig() {
       if (typeof parsed.billTemplateUseCustom === "boolean") cfg.billTemplateUseCustom = parsed.billTemplateUseCustom;
       if (typeof parsed.billTemplateSyncedAt === "string") cfg.billTemplateSyncedAt = parsed.billTemplateSyncedAt;
       if (typeof parsed.billTemplatePending === "boolean") cfg.billTemplatePending = parsed.billTemplatePending;
+      if (typeof parsed.escposCustomLegacy === "boolean") cfg.escposCustomLegacy = parsed.escposCustomLegacy;
+      // One-time (1.6.10): ESC/POS mode now prints only the built-in layout. A
+      // PC already printing its custom layout in ESC/POS keeps doing so
+      // (escposCustomLegacy). Its print mode is never changed: a PC is often on
+      // ESC/POS because its printer cannot print raster at all.
+      if (cfg.printModeVersion !== 2) {
+        if (cfg.printMode === "escpos" && cfg.billTemplateUseCustom) {
+          cfg.escposCustomLegacy = true;
+          log.info("Print mode migration: keeping this PC's custom layout in ESC/POS mode");
+        }
+        cfg.printModeVersion = 2;
+        cfg._needsSave = true;
+      }
       if (typeof parsed.billTemplateUpdatedAt === "string") cfg.billTemplateUpdatedAt = parsed.billTemplateUpdatedAt;
       const ktpl = BillTemplate.normalizeTemplate(parsed.kotTemplate);
       if (ktpl) cfg.kotTemplate = ktpl;
@@ -815,6 +854,10 @@ function loadPrintConfig() {
 
 function applyPaperProfile() {
   printConfig = loadPrintConfig();
+  if (printConfig._needsSave) {
+    delete printConfig._needsSave;
+    try { savePrintConfig({}); return; } catch (e) { log.warn("Could not save the print-mode migration:", e.message); }
+  }
   const p = printConfig.profiles[printConfig.activeType] || DEFAULT_PRINT_CONFIG.profiles["80mm"];
   RASTER_WIDTH = clampWidth(p.rasterWidth);
   RASTER_SRC_WIDTH = Math.max(1, Math.round(RASTER_WIDTH / clampScale(p.scale)));
@@ -835,6 +878,11 @@ function savePrintConfig(incoming) {
     ? incoming.printMode : printConfig.printMode;
   clean.cutCommand = (incoming && isValidCutCommand(incoming.cutCommand))
     ? incoming.cutCommand : printConfig.cutCommand;
+  clean.printerType = (incoming && (incoming.printerType === "star" || incoming.printerType === "escpos"))
+    ? incoming.printerType : (printConfig.printerType === "star" ? "star" : "escpos");
+  clean.printModeVersion = 2;
+  clean.escposCustomLegacy = (incoming && typeof incoming.escposCustomLegacy === "boolean")
+    ? incoming.escposCustomLegacy : !!printConfig.escposCustomLegacy;
   // Bill layout keys: a key present in `incoming` wins (null clears it),
   // otherwise keep what we have — the settings window sends a partial config.
   const has = (k) => !!incoming && Object.prototype.hasOwnProperty.call(incoming, k);
@@ -911,7 +959,8 @@ async function printTestSlip(which = "bill", opts = {}) {
   const testTargets = printersFor(isBill);
   // ESC/POS mode: test the mode that will actually be used — raw text in the
   // printer's own font, through the custom bill layout when one is active.
-  if (printConfig.printMode === "escpos" || opts.escpos) {
+  // A Star TSP100 has no fonts: its test is always the raster one.
+  if ((printConfig.printMode === "escpos" || opts.escpos) && printConfig.printerType !== "star") {
     log.info(`Test print: ESC/POS text mode${opts.template ? " (draft layout)" : ""}`);
     const filename = "temp_printer_test.bin";
     const filePath = app.isPackaged ? path.join(process.resourcesPath, filename) : path.join(__dirname, filename);
@@ -941,7 +990,7 @@ async function printTestSlip(which = "bill", opts = {}) {
     const testTpl = opts.template || (isBill ? activeBillTemplate(testOrder) : activeKotTemplate(testOrder));
     if (testTpl) {
       log.info(`Test print: raster mode, custom ${isBill ? "bill" : "KOT"} layout${opts.template ? " (draft)" : ""}`);
-      const bytes = await buildTemplateRaster(testTpl, testOrder, win);
+      const bytes = forPrinterType(await buildTemplateRaster(testTpl, testOrder, win));
       const filename = "temp_printer_test.bin";
       const filePath = app.isPackaged ? path.join(process.resourcesPath, filename) : path.join(__dirname, filename);
       fs.writeFileSync(filePath, bytes);
@@ -965,7 +1014,7 @@ async function printTestSlip(which = "bill", opts = {}) {
       });
       injectArabic = printConfig.fullArabic;
     }
-    const escPosBuffer = await captureReceiptRaster(win, injectArabic);
+    const escPosBuffer = forPrinterType(await captureReceiptRaster(win, injectArabic));
     const filename = "temp_printer_test.bin";
     const filePath = app.isPackaged ? path.join(process.resourcesPath, filename) : path.join(__dirname, filename);
     fs.writeFileSync(filePath, escPosBuffer);
@@ -1198,8 +1247,11 @@ async function captureReceiptRaster(win, injectArabic = false, deliveryBoy = nul
   // Scale the RASTER_SRC_WIDTH layout up to the printhead width via CSS zoom (native
   // re-raster = crisp), then capture and downscale.
   const zoom = RASTER_WIDTH / RASTER_SRC_WIDTH;
+  // Pin the layout width first: the dashboard's printer setup arrives with the
+  // payload, after the page was laid out. The URL's w= is this same width when
+  // nothing changed, so this is a no-op then.
   await win.webContents.executeJavaScript(
-    `(() => { const el = document.getElementById('printable-content'); if (el) el.style.zoom = String(${RASTER_WIDTH} / ${RASTER_SRC_WIDTH}); return true; })()`
+    `(() => { const el = document.getElementById('printable-content'); if (el) { if (el.style.width) el.style.width = '${RASTER_SRC_WIDTH}px'; el.style.maxWidth = '${RASTER_SRC_WIDTH}px'; el.style.zoom = String(${RASTER_WIDTH} / ${RASTER_SRC_WIDTH}); } return true; })()`
   );
   // Wait for the zoom to actually paint. Two rAFs land after the next composited
   // frame, which is the real signal — this used to be a flat 450ms sleep that was
@@ -1250,6 +1302,126 @@ function apiBase() {
     if (u.protocol === "https:" && /(^|\.)(cravings\.live|menuthere\.com)$/i.test(u.hostname)) return u.origin;
   } catch (e) { /* window not ready */ }
   return API_BASE_FALLBACK;
+}
+
+// ---- This PC on the dashboard (Settings → Printing → Printers) ----
+// The printers are managed from the dashboard now. This PC reports its Windows
+// printers (POST /api/print/devices, with the dashboard window's cookies) and
+// gets back what the dashboard picked: the Bill printer, the KOT printer, how
+// many copies, and that printer's print mode, type, paper and size. That is
+// written into print-config.json like a change made in the old settings
+// window, so printing reads it exactly as before. Until the dashboard picks
+// anything (assignment null), this PC keeps its own settings untouched.
+function deviceIdPath() {
+  return path.join(app.getPath("userData"), "device-id");
+}
+
+function deviceId() {
+  try {
+    const id = fs.readFileSync(deviceIdPath(), "utf8").trim();
+    if (id) return id;
+  } catch (e) { /* first run */ }
+  const id = require("crypto").randomBytes(16).toString("hex");
+  try { fs.writeFileSync(deviceIdPath(), id); } catch (e) { log.warn("Could not save the device id:", e.message); }
+  return id;
+}
+
+// The setup every printer on this PC prints with (the PC has one), in the
+// dashboard's terms.
+function dashboardSetup() {
+  const p = printConfig.profiles[printConfig.activeType] || DEFAULT_PRINT_CONFIG.profiles["80mm"];
+  return {
+    mode: printConfig.printMode === "escpos" ? "escpos" : "raster",
+    type: printConfig.printerType === "star" ? "star" : "escpos",
+    paper: printConfig.activeType === "58mm" ? "58mm" : "80mm",
+    // 100 % is this app's default 1.6 enlargement.
+    // On the dashboard's 10 % steps.
+    scale: Math.min(150, Math.max(50, Math.round((clampScale(p.scale) / 1.6) * 10) * 10)),
+  };
+}
+
+let lastDeviceReport = 0;
+async function reportDevice(force = false) {
+  if (!force && Date.now() - lastDeviceReport < 5 * 60 * 1000) return;
+  try {
+    const { printers } = await listPrinters();
+    const setup = dashboardSetup();
+    const res = await apiRequest("POST", "/api/print/devices", {
+      device_id: deviceId(),
+      name: require("os").hostname(),
+      platform: process.platform === "darwin" ? "mac" : "windows",
+      app_version: app.getVersion(),
+      printers: printers.map((pr) => ({
+        id: pr.name, name: pr.displayName || pr.name, connection: "windows", is_default: !!pr.isDefault, ...setup,
+      })),
+    });
+    if (!res.ok) {
+      if (res.status !== 401) log.warn(`Device report failed: ${res.status || res.error}`);
+      return;
+    }
+    lastDeviceReport = Date.now();
+    applyDashboardAssignment(res.json && res.json.assignment);
+  } catch (e) {
+    log.warn("Device report failed:", e.message);
+  }
+}
+
+function applyDashboardAssignment(a) {
+  if (!a || typeof a !== "object") return; // the dashboard leaves this PC alone
+  const next = { ...printConfig, profiles: JSON.parse(JSON.stringify(printConfig.profiles)) };
+  const list = (targets) => (Array.isArray(targets) ? targets : [])
+    .filter((d) => d && typeof d.printer_id === "string" && d.printer_id)
+    .map((d) => ({ name: d.printer_id, copies: normalizeCopies(d.copies) }));
+  let setupId = null;
+  if (a.manual === false) {
+    // "Auto": the Windows default printer (an empty list), for both, with
+    // the setup the dashboard keeps for that printer.
+    next.billPrinters = [];
+    next.kotPrinters = [];
+    setupId = (a.printers && Object.keys(a.printers)[0]) || null;
+  } else if (a.manual === true) {
+    // Every ticked printer, each with its own copies. Nothing ticked for a
+    // document = the Windows default printer, as an empty list always meant.
+    next.billPrinters = list(a.bill_targets);
+    next.kotPrinters = list(a.kot_targets);
+    setupId = (next.billPrinters[0] || next.kotPrinters[0] || {}).name || null;
+  } else {
+    // A save from before printer lists: one printer per document.
+    const bill = list(a.bill ? [a.bill] : []);
+    const kot = list(a.kot ? [a.kot] : []);
+    if (bill.length) next.billPrinters = bill;
+    if (kot.length) next.kotPrinters = kot;
+    setupId = (a.bill && a.bill.printer_id) || (a.kot && a.kot.printer_id) || null;
+  }
+  // One print mode per PC: the first bill printer's setup (else the KOT's).
+  const st = setupId && a.printers && a.printers[setupId];
+  if (st && typeof st === "object") {
+    next.printMode = st.mode === "escpos" ? "escpos" : "raster";
+    next.printerType = st.type === "star" ? "star" : "escpos";
+    next.activeType = st.paper === "58mm" ? "58mm" : "80mm";
+    const pct = Math.min(150, Math.max(50, Math.round(Number(st.scale)) || 100));
+    next.profiles[next.activeType] = { ...next.profiles[next.activeType], scale: clampScale(1.6 * pct / 100) };
+  }
+  const keys = ["billPrinters", "kotPrinters", "printMode", "printerType", "activeType", "profiles"];
+  if (keys.every((k) => JSON.stringify(next[k]) === JSON.stringify(printConfig[k]))) return;
+  log.info(`Dashboard printer setup applied: bill=${JSON.stringify(next.billPrinters)} kot=${JSON.stringify(next.kotPrinters)} mode=${next.printMode} type=${next.printerType} paper=${next.activeType}`);
+  savePrintConfig(next);
+}
+
+// Printer Settings opens the dashboard's Printing settings in the app window.
+function openPrinterSettings() {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+      mainWindow.loadURL(`${apiBase()}/admin-v3?view=Settings&sg=printing&ss=devices`);
+      reportDevice(true);
+      return;
+    }
+  } catch (e) {
+    log.warn("Could not open the dashboard's printer settings:", e.message);
+  }
+  openSettingsWindow();
 }
 
 // The last bill / KOT this PC printed, kept in memory only, so a test print can
@@ -1340,8 +1512,16 @@ function sampleBill(kind) {
 
 // Which layout a bill prints with: the account's copy travelling in the payload
 // (freshest), else this PC's copy, else none — which means the built-in bill.
+// ESC/POS mode prints the built-in layout only (the custom layout is a raster
+// layout), except on a PC that already printed its custom layout in ESC/POS
+// before 1.6.10 (escposCustomLegacy): it keeps printing exactly that.
+function escposBlocksTemplate() {
+  return printConfig.printMode === "escpos" && printConfig.printerType !== "star" && !printConfig.escposCustomLegacy;
+}
+
 function activeBillTemplate(bill) {
-  if (!printConfig.billTemplateUseCustom) return null; // not opted in on this PC
+  if (!customLayoutOn(bill)) return null; // not switched on
+  if (escposBlocksTemplate()) return null;
   const fromPayload = bill && bill.bill_template ? BillTemplate.normalizeTemplate(bill.bill_template) : null;
   return fromPayload || printConfig.billTemplate || null;
 }
@@ -1360,7 +1540,8 @@ async function buildEscPosBill(bill) {
 
 // The kitchen ticket: same rules as the bill, its own layout and fallback.
 function activeKotTemplate(order) {
-  if (!printConfig.billTemplateUseCustom) return null;
+  if (!customLayoutOn(order)) return null;
+  if (escposBlocksTemplate()) return null;
   const fromPayload = order && order.kot_template ? BillTemplate.normalizeTemplate(order.kot_template) : null;
   return fromPayload || printConfig.kotTemplate || null;
 }
@@ -1736,7 +1917,21 @@ function syncBillTemplate(reason) {
 }
 
 // --- BILL LAYOUT WINDOW (designer.html) ---
-function openDesignerWindow(doc) {
+// 1.6.10: the bill / KOT layout is designed in the dashboard (Settings →
+// Printing → Custom layout, the same designer moved to the web), so it is the
+// one place for every PC and phone. What is left opening it (Ctrl+Shift+L)
+// points there instead; the window below is no longer reachable.
+function openDesignerWindow() {
+  dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+    type: "info",
+    title: "Bill layout",
+    message: "Bill and KOT layouts are designed in your dashboard now",
+    detail: "Open Settings → Printing → Custom layout in the dashboard. The layout you save there prints on every PC and phone.",
+  }).catch(() => {});
+}
+
+// eslint-disable-next-line no-unused-vars
+function openDesignerWindowLegacy(doc) {
   doc = docOf(doc);
   if (designerWindow && !designerWindow.isDestroyed()) {
     designerWindow.show();
@@ -1796,11 +1991,18 @@ function createWindow() {
   // the alarm can't come back unmuted when the dashboard reloads.
   applyOrderSoundMute();
   mainWindow.webContents.on("did-finish-load", applyOrderSoundMute);
+  // The dashboard's Printers tab logs this after saving a change: fetch it now.
+  mainWindow.webContents.on("console-message", (_e, _level, message) => {
+    if (message === "PRINT DEVICES CHANGED") reportDevice(true);
+  });
 
   // --- BACKGROUND PRINTING HANDLER ---
   // Runs the whole hidden-window print pipeline for one /bill/ or /kot/ URL.
   const startPrintJob = (url) => {
       console.log(`Intercepted URL for printing: ${url}`);
+      // The dashboard's latest printer choice (copies, printers) before this
+      // job is sent: it lands while the page loads, so it costs no time.
+      reportDevice(true);
       const jobT0 = Date.now();
       const since = () => `${Date.now() - jobT0}ms`;
 
@@ -1881,7 +2083,8 @@ function createWindow() {
               const fullArabic = webRendered ? orderData.full_arabic : printConfig.fullArabic;
               const layout = isValidBillLayout(orderData.bill_layout) ? orderData.bill_layout : printConfig.billLayout;
 
-              if (printConfig.printMode === "escpos") {
+              // A Star TSP100 / TSP143 has no fonts: it always prints raster.
+              if (printConfig.printMode === "escpos" && printConfig.printerType !== "star") {
                   // Raw ESC/POS text: the printer's built-in font, DEFAULT layout only.
                   // Custom layouts, Arabic and logos are image-only, so warn loudly
                   // rather than silently dropping them from the receipt.
@@ -1907,8 +2110,10 @@ function createWindow() {
                       escPosBuffer = await buildTemplateRaster(tpl, orderData, backgroundWindow);
                   } catch (e) {
                       // A broken layout must never cost a partner a bill.
-                      log.error("Custom layout raster failed; printing it as ESC/POS text instead", e);
-                      escPosBuffer = isBill ? await buildEscPosBill(orderData) : await buildEscPosKot(orderData);
+                      log.error("Custom layout raster failed; printing the page instead", e);
+                      // A picture of the page, not ESC/POS text: a Star TSP100 prints
+                      // no text, and an ESC/POS printer prints the page as well.
+                      escPosBuffer = await captureReceiptRaster(backgroundWindow, false, isBill ? orderData.delivery_boy : null);
                   }
               } else if (isBill && isCustomBillLayout(layout)) {
                   if (webRendered) {
@@ -1941,6 +2146,7 @@ function createWindow() {
                   log.info("Using raster image print (raster mode)");
                   escPosBuffer = await captureReceiptRaster(backgroundWindow, false, isBill ? orderData.delivery_boy : null);
               }
+              escPosBuffer = forPrinterType(escPosBuffer);
           } catch (e) {
               log.error("Error building print payload", e);
               printHandled = false; // allow a retry on a later log
@@ -2132,7 +2338,7 @@ function createWindow() {
   // (both work even though the menu bar is hidden).
   mainWindow.webContents.on("before-input-event", (event, input) => {
     const key = (input.key || "").toLowerCase();
-    if (input.control && input.shift && key === "p") openSettingsWindow();
+    if (input.control && input.shift && key === "p") openPrinterSettings();
     if (input.control && input.shift && key === "l") openDesignerWindow();
   });
 
@@ -2243,9 +2449,7 @@ function buildAppMenu() {
     {
       label: "Printer",
       submenu: [
-        { label: "Printer Settings…", accelerator: "CmdOrCtrl+Shift+P", click: () => openSettingsWindow() },
-        { label: "Bill Layout…", accelerator: "CmdOrCtrl+Shift+L", click: () => openDesignerWindow("bill") },
-        { label: "KOT Layout…", click: () => openDesignerWindow("kot") },
+        { label: "Printer Settings…", accelerator: "CmdOrCtrl+Shift+P", click: () => openPrinterSettings() },
         { label: "Test Print", click: () => { printTestSlip().catch((e) => log.warn("Test print failed:", e.message)); } },
         { type: "separator" },
         { role: "reload" },
@@ -2272,9 +2476,7 @@ function buildAppMenu() {
 function refreshTrayMenu() {
   if (!tray || tray.isDestroyed()) return;
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "Printer Settings", click: () => openSettingsWindow() },
-    { label: "Bill Layout", click: () => openDesignerWindow("bill") },
-    { label: "KOT Layout", click: () => openDesignerWindow("kot") },
+    { label: "Printer Settings", click: () => openPrinterSettings() },
     { label: "Test sound", click: () => testOrderSound() },
     {
       label: "Mute new-order sound",
@@ -2294,7 +2496,7 @@ function createTray() {
     tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
     tray.setToolTip("Cravings.live");
     refreshTrayMenu();
-    tray.on("double-click", () => openSettingsWindow());
+    tray.on("double-click", () => openPrinterSettings());
   } catch (e) {
     log.warn("Tray init failed (settings still available via Ctrl+Shift+P):", e.message);
   }
@@ -2327,8 +2529,11 @@ function spoolerPrinterNames() {
   });
 }
 
-// The settings window needs the machine's printer list to choose from.
-ipcMain.handle("print-config:printers", async () => {
+// The machine's printer list: for the settings window, and reported to the
+// dashboard's Settings → Printing → Printers.
+ipcMain.handle("print-config:printers", () => listPrinters());
+
+async function listPrinters() {
   const out = [];
   const seen = new Set();
   const add = (name, displayName, isDefault, source) => {
@@ -2357,7 +2562,7 @@ ipcMain.handle("print-config:printers", async () => {
 
   log.info(`Printer list: ${out.length} printer(s) -> ${out.map((p) => p.name).join(", ") || "(none)"}`);
   return { printers: out, error };
-});
+}
 ipcMain.handle("print-config:save", (_e, cfg) => savePrintConfig(cfg));
 ipcMain.handle("print-config:test", async (_e, which) => {
   try {
@@ -2415,7 +2620,7 @@ ipcMain.handle("bill-template:test", async (_e, args) => {
     const useLast = !!(args && args.which === "last" && last);
     const kind = args && BillTemplate.SAMPLE_BILLS[args.which] ? args.which : "delivery";
     const order = useLast ? last : (isKot ? sampleKot(kind) : sampleBill(kind));
-    const out = await printTestSlip(isKot ? "kot" : "bill", { template: tpl, order, escpos: true });
+    const out = await printTestSlip(isKot ? "kot" : "bill", { template: tpl, order, escpos: printConfig.printMode === "escpos" && printConfig.printerType !== "star" });
     return { ok: true, message: String(out || "").trim(), usedLastBill: useLast };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -2476,6 +2681,9 @@ app.on("ready", () => {
   // Pick up a layout the Menuthere team (or another PC) saved to the account.
   // Later than the window, so the dashboard's own load is not competing with it.
   setTimeout(() => syncBillTemplate("startup").catch(() => {}), 6000);
+  // This PC and its printers on the dashboard; picks up printer changes made there.
+  setTimeout(() => reportDevice(true), 9000);
+  setInterval(() => reportDevice(false), 5 * 60 * 1000 + 1000);
   // Dev convenience: `electron . --designer` opens the Bill Layout window at once.
   if (process.argv.includes("--designer")) setTimeout(() => openDesignerWindow(), 1500);
 });

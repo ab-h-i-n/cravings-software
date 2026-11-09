@@ -918,7 +918,7 @@
             all.forEach((key) => {
               const col = colsNow.find((c) => c.key === key);
               const on = !!col;
-              const dflt = BT.DEFAULT_COLUMNS.find((d) => d.key === key);
+              const dflt = (BT.COLUMN_DEFS || BT.DEFAULT_COLUMNS).find((d) => d.key === key);
               const chk = h("input", { type: "checkbox", checked: on });
               chk.addEventListener("change", () => P(b.id, (x) => {
                 x.columns = x.columns && x.columns.length ? x.columns : clone(BT.DEFAULT_COLUMNS);

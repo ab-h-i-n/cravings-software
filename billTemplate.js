@@ -112,10 +112,6 @@
   // Everything the /bill payload carries, named for humans. `labelOnly` fields
   // never count as content for "hide when empty" (a line that only has a
   // currency symbol on it is still empty).
-  // The order's own number, without the date the /bill and /kot pages append
-  // to it ("42-06/09/2026" -> "42"). Newer pages also send it as `order_no`.
-  // Blank when the order has no number (the page then sends the short id in
-  // its place), so a line built on it hides itself.
   // The order's 6-digit short id (orders since 2026-11-02). An order without
   // one (older orders keep an 8-character code) prints its order number
   // instead, and only an order with neither falls back to the uuid's first 8.
@@ -126,6 +122,10 @@
     return orderNumber(b) || code || str(b.id).slice(0, 8);
   }
 
+  // The order's own number, without the date the /bill and /kot pages append
+  // to it ("42-06/09/2026" -> "42"). Newer pages also send it as `order_no`.
+  // Blank when the order has no number (the page then sends the short id in
+  // its place), so a line built on it hides itself.
   function orderNumber(b) {
     if (b.order_no != null && String(b.order_no).trim() !== "") return String(b.order_no).trim();
     const d = str(b.display_id).trim();
@@ -153,8 +153,9 @@
 
     { key: "order_id", group: "Order", label: "Order id (short)", get: (b) => str(b.id).slice(0, 8) || str(b.display_id) },
     { key: "order_no", group: "Order", label: "Order number (no date)", get: (b) => orderNumber(b) },
-    // The code the customer and the dashboard show (see orderShortId). Its
-    // last 4 print bold — staff call an order by them.
+    // The code the customer and the dashboard show: 6 digits since 2026-11-02
+    // (the uuid's first 8 before). Its last 4 print bold — staff call an order
+    // by them. Older web builds send no order_short_id: the uuid stands in.
     { key: "order_short_id", group: "Order", label: "Order short id (last 4 bold)", boldTail: 4, get: (b) => orderShortId(b) },
     { key: "date", group: "Order", label: "Date", get: (b) => str(b.created_at) },
     { key: "time", group: "Order", label: "Time", get: (b) => to12Hour(b.time) },
@@ -529,22 +530,24 @@
 
   // An add-on row from the web payload is named "Add-on: Fried Egg ×2" and priced
   // for all of them (one of the dish). Print the count in the Qty column instead —
-  // name "Add-on: Fried Egg", qty = dish qty × 2, price = one add-on — so the line
-  // amount (qty × price) is unchanged.
+  // name "* Add-on: Fried Egg", qty = dish qty × 2, price = one add-on — so the
+  // line amount (qty × price) is unchanged. The "* " marks it as an add-on.
   function addonRow(it) {
     if (!it || !it.is_addon) return it;
-    const m = /\s*[×x]\s*(\d+)\s*$/.exec(str(it.name));
-    if (!m) return it;
-    const n = parseInt(m[1], 10) || 1;
+    const name = str(it.name).replace(/^\s*\*\s*/, "");
+    const m = /\s*[×x]\s*(\d+)\s*$/.exec(name);
+    const n = m ? parseInt(m[1], 10) || 1 : 1;
     return Object.assign({}, it, {
-      name: str(it.name).slice(0, m.index),
+      name: "* " + (m ? name.slice(0, m.index) : name),
       quantity: (Number(it.quantity) || 1) * n,
       price: (Number(it.price) || 0) / n,
     });
   }
 
-  // The separator goes between dishes, never between a dish and its add-ons.
-  const ruleAfter = (rows, idx) => idx < rows.length - 1 && !(rows[idx + 1] && rows[idx + 1].is_addon);
+  // The separator and the blank line go between dishes, never between a dish
+  // and its add-ons.
+  const nextIsAddon = (rows, idx) => !!(rows[idx + 1] && rows[idx + 1].is_addon);
+  const ruleAfter = (rows, idx) => idx < rows.length - 1 && !nextIsAddon(rows, idx);
 
   function resolveItems(bk, list, ctx, out, ghost, groupId) {
     const emit = (line) => out.push(tagLine(line, bk, ghost, groupId));
@@ -563,7 +566,7 @@
           const st = col.key === "name" && nameStyle ? Object.assign({}, rowStyle, nameStyle) : rowStyle;
           return { segs: fillSegs([{ v: "{" + col.key + "}" }], ctx, st).segs, align: col.align, width: col.width };
         }) });
-        itemExtras(bk, it, ctx, emit);
+        itemExtras(bk, it, ctx, emit, nextIsAddon(sample, idx));
         if (bk.separator && ruleAfter(sample, idx)) emit({ t: "rule", ch: "-" });
         ctx.item = null;
       });
@@ -581,28 +584,29 @@
         const amount = fillSegs([{ v: "{amount}" }], ctx, rowStyle).segs;
         emit({ t: "row", cells: [{ segs: left, align: "left", width: "flex" }, { segs: amount, align: "right", width: null }] });
       }
-      itemExtras(bk, it, ctx, emit);
+      itemExtras(bk, it, ctx, emit, nextIsAddon(sample, idx));
       if (bk.separator && ruleAfter(sample, idx)) emit({ t: "rule", ch: "-" });
       ctx.item = null;
     });
   }
 
-  function itemExtras(bk, it, ctx, emit) {
+  function itemExtras(bk, it, ctx, emit, beforeAddon) {
     if (bk.showNotes && it && it.notes) {
       emit({ t: "text", align: "left", segs: fillSegs([{ v: "  (Note: " + str(it.notes) + ")" }], ctx, null).segs, wrap: true });
     }
     if (bk.showCategory && it && it.category) {
       emit({ t: "text", align: "left", segs: fillSegs([{ v: "  " + str(it.category) }], ctx, null).segs, wrap: true });
     }
-    if (bk.gapAfter) emit({ t: "feed", n: 1 });
+    if (bk.gapAfter && !beforeAddon) emit({ t: "feed", n: 1 });
   }
 
   function normalizeColumns(cols) {
+    if (isOldDefaultColumns(cols)) return DEFAULT_COLUMNS.map((d) => Object.assign({}, d));
     const out = [];
     (Array.isArray(cols) ? cols : []).forEach((c) => {
       if (!c || ITEM_COLUMN_KEYS.indexOf(c.key) === -1) return;
       if (out.some((o) => o.key === c.key)) return;
-      const dflt = DEFAULT_COLUMNS.find((d) => d.key === c.key);
+      const dflt = columnDef(c.key);
       out.push({
         key: c.key,
         label: c.label != null ? capText(c.label) : dflt.label,
@@ -611,15 +615,27 @@
       });
     });
     if (!out.length) return DEFAULT_COLUMNS.map((d) => Object.assign({}, d));
-    if (!out.some((o) => o.key === "name")) out.splice(Math.min(1, out.length), 0, Object.assign({}, DEFAULT_COLUMNS.find((d) => d.key === "name")));
+    if (!out.some((o) => o.key === "name")) out.unshift(Object.assign({}, columnDef("name")));
     return out;
   }
-  const DEFAULT_COLUMNS = [
+  // Every column an items table can have, with its defaults.
+  const COLUMN_DEFS = [
     { key: "name", label: "Item", width: "flex", align: "left" },
     { key: "qty", label: "Qty", width: 4, align: "right" },
     { key: "price", label: "Price", width: 8, align: "right" },
     { key: "amount", label: "Amount", width: 9, align: "right" },
   ];
+  const columnDef = (key) => COLUMN_DEFS.find((d) => d.key === key);
+  // The table a layout gets when it names no columns: Item | Qty | Amount.
+  const DEFAULT_COLUMNS = ["name", "qty", "amount"].map((k) => Object.assign({}, columnDef(k)));
+  // Until 1.6.9 the default was Qty | Item | Price | Amount. A layout still
+  // carrying exactly that (never edited) follows the new default.
+  const isOldDefaultColumns = (cols) =>
+    Array.isArray(cols) && cols.length === 4 &&
+    [["qty", "Qty", 4], ["name", "Item", null], ["price", "Price", 8], ["amount", "Amount", 9]].every(([k, l, w], i) => {
+      const c = cols[i] || {};
+      return c.key === k && (c.label == null || c.label === l) && (w == null || c.width == null || c.width === w);
+    });
 
   // Two rules in a row print as one (as today): keep the first, drop repeats.
   function collapseRules(lines) {
@@ -937,6 +953,13 @@
     return out;
   }
 
+  // The built-in bill's items table, as ESC/POS text without the leading init
+  // (ESC @), so main.js prints exactly what the default layout prints.
+  function itemsEscPos(bill, cols, paper) {
+    const tpl = { blocks: [{ id: "items", type: "items", layout: "columns" }], paper: { feedLines: 0, cut: false } };
+    return physToEscPos(fitLines(resolveBill(tpl, bill, { paper }), cols), { paper }).slice(2);
+  }
+
   // ------------------------------------------------------------ HTML preview
   function escapeHtml(s) {
     return str(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -1248,7 +1271,7 @@
       ] },
       { id: "r2", type: "rule" },
       { id: "ih", type: "text", text: "ITEMS", style: { bold: true } },
-      { id: "items", type: "items", layout: "inline", format: "{qty} x {name}" },
+      { id: "items", type: "items", layout: "columns" },
       { id: "chg", type: "group", label: "Extra charges", when: { has: "extra_charges" }, blocks: [
         { id: "x0", type: "rule" },
         { id: "x1", type: "charges" },
@@ -1399,7 +1422,7 @@
 
   return {
     VERSION, SIZES, ALIGNS, BLOCK_TYPES, QR_SOURCES, QR_SIZES, IMAGE_WIDTHS, ORDER_TYPES, ITEM_COLUMN_KEYS,
-    FIELDS, ITEM_FIELDS, WHEN_FIELDS, TYPE_LABELS, DEFAULT_COLUMNS,
+    FIELDS, ITEM_FIELDS, WHEN_FIELDS, TYPE_LABELS, DEFAULT_COLUMNS, COLUMN_DEFS, itemsEscPos,
     DEFAULT_TEMPLATE, DEFAULT_KOT_TEMPLATE, SAMPLE_BILL, SAMPLE_BILLS, SAMPLE_KOTS,
     sanitizeForPrinter, to12Hour, generatedStamp, orderTypeKey, hasValue, evalWhen,
     parseMarkup, resolveBill, fitLines, physToEscPos, physToHtml, escposQr, qrModule, qrGeometry, qrModulesFor,

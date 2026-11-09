@@ -86,9 +86,18 @@
       <span class="lbl">Print mode</span>
       <div class="types" id="modes">
         <label class="type" data-mode="raster"><input type="radio" name="pmode" value="raster"><div class="t">Raster</div><div class="d">image · all layouts</div></label>
-        <label class="type" data-mode="escpos"><input type="radio" name="pmode" value="escpos"><div class="t">ESC/POS</div><div class="d">text · custom layout</div></label>
+        <label class="type" data-mode="escpos"><input type="radio" name="pmode" value="escpos"><div class="t">ESC/POS</div><div class="d">text · standard bill</div></label>
       </div>
       <div class="hint" id="modeHint"></div>
+    </div>
+
+    <div class="card">
+      <span class="lbl">Printer type</span>
+      <div class="types" id="ptypes">
+        <label class="type" data-ptype="escpos"><input type="radio" name="pkind" value="escpos"><div class="t">ESC/POS</div><div class="d">Epson &amp; most printers</div></label>
+        <label class="type" data-ptype="star"><input type="radio" name="pkind" value="star"><div class="t">Star TSP100</div><div class="d">TSP100 / TSP143</div></label>
+      </div>
+      <div class="hint">Star TSP100 / TSP143 printers only print pictures: they always print raster. If a test print says it printed but no paper comes out, switch this.<br>Print mode, printer type, paper and size can also be set for every device from your dashboard (Settings → Printing → Printer setup); when they are, the dashboard's choice is used.</div>
     </div>
 
     <div class="card">
@@ -102,20 +111,22 @@
 
     <div class="card" id="layoutCard">
       <div class="phead">
-        <span class="lbl" style="margin:0">Bill &amp; KOT layout (ESC/POS)</span>
+        <span class="lbl" style="margin:0">Custom bill &amp; KOT layout</span>
         <span>
-          <button class="mini" id="layoutSyncBtn" title="Fetch the layouts saved to your account">Sync</button>
-          <button class="mini" id="layoutTestBtn" title="Print a sample bill (ESC/POS)">Test bill</button>
-          <button class="mini" id="layoutTestKotBtn" title="Print a sample kitchen ticket (ESC/POS)">Test KOT</button>
+          <button class="mini" id="layoutTestBtn" title="Print a sample bill with your custom layout">Test bill</button>
+          <button class="mini" id="layoutTestKotBtn" title="Print a sample kitchen ticket with your custom layout">Test KOT</button>
         </span>
       </div>
-      <label class="tog"><span class="l">Use Customized bill / kot<div class="h">Off: the built-in bill and KOT print. On: your customized layouts print on this PC.</div></span><span class="switch"><input type="checkbox" id="useCustomChk"><i></i></span></label>
       <div class="lstat"><span id="layoutName"><b>Built-in bill and KOT</b></span><span id="layoutSync" class="lsync"></span></div>
-      <div class="btns" style="margin-top:8px">
-        <button id="customizeBtn" class="primary">Customize bill…</button>
-        <button id="customizeKotBtn" class="primary">Customize KOT…</button>
+      <div class="hint">Layouts are designed, and switched on, in your dashboard: <b>Settings → Printing → Custom layout</b>. Every PC and phone prints them from there.</div>
+      <!-- The PC's own layout switch and designer moved to the dashboard. Kept
+           (hidden) so the script's handlers still find their elements. -->
+      <div hidden>
+        <button id="layoutSyncBtn">Sync</button>
+        <input type="checkbox" id="useCustomChk">
+        <button id="customizeBtn">Customize bill…</button>
+        <button id="customizeKotBtn">Customize KOT…</button>
       </div>
-      <div class="hint">Every line is editable. Layouts are saved to your Menuthere account, so they follow you to any PC and the Menuthere team can adjust them for you. Applies to ESC/POS prints.</div>
     </div>
 
     <div class="card">
@@ -165,7 +176,7 @@
     const widthNum = $("widthNum"), widthRange = $("widthRange");
     const scaleNum = $("scaleNum"), scaleRange = $("scaleRange");
     const status = $("status"), srcInfo = $("srcInfo");
-    let cfg = null, currentType = "80mm", currentMode = "raster", currentCut = "escpos";
+    let cfg = null, currentType = "80mm", currentMode = "raster", currentCut = "escpos", currentKind = "escpos";
 
     const clampW = (w) => Math.min(1200, Math.max(120, Math.round((Number(w) || 384) / 8) * 8));
     const clampS = (s) => Math.min(3, Math.max(1, Math.round((Number(s) || 1.6) * 100) / 100));
@@ -262,15 +273,21 @@
       const radio = document.querySelector(`input[name=pcut][value="${cut}"]`);
       if (radio) radio.checked = true;
     }
+    function selectKindUI(kind) {
+      document.querySelectorAll("#ptypes .type").forEach(el => el.classList.toggle("sel", el.dataset.ptype === kind));
+      const radio = document.querySelector(`input[name=pkind][value="${kind}"]`);
+      if (radio) radio.checked = true;
+    }
     function selectModeUI(mode) {
       document.querySelectorAll("#modes .type").forEach(el => el.classList.toggle("sel", el.dataset.mode === mode));
       const radio = document.querySelector(`input[name=pmode][value="${mode}"]`);
       if (radio) radio.checked = true;
       $("modeHint").innerHTML = mode === "escpos"
-        ? "Raw text in the printer's built-in font — fast. Prints your <b>custom bill layout</b> when one is saved (card below). Tax&nbsp;Invoice / UAE layouts and Arabic text cannot be printed this way."
-        : "Prints the receipt as an image, exactly as it looks on screen. Needed for Arabic and the Tax&nbsp;Invoice / UAE layouts. Bill layout customisation applies to ESC/POS mode only.";
-      // The layout only applies to ESC/POS prints, so its card only shows there.
-      $("layoutCard").hidden = mode !== "escpos";
+        ? "Raw text in the printer's built-in font — fast, the <b>standard bill only</b>. Your custom layout, the Tax&nbsp;Invoice / UAE layouts, logos and Arabic need Raster."
+        : "Prints the receipt as an image, exactly as it looks on screen: every layout, Arabic, logos and your <b>custom bill layout</b> (card below).";
+      // The custom layout prints in raster mode only, so its card only shows there.
+      // Also on a PC that kept its custom layout in ESC/POS (1.6.10 migration).
+      $("layoutCard").hidden = mode !== "raster" && !(cfg && cfg.escposCustomLegacy);
     }
     function fillForm(type) {
       const p = cfg.profiles[type] || { rasterWidth: type === "58mm" ? 384 : 576, scale: 1.6 };
@@ -289,6 +306,7 @@
         activeType: currentType,
         printMode: currentMode,
         cutCommand: currentCut,
+        printerType: currentKind,
         billPrinters: pickedPrinters("billPrinters"),
         kotPrinters: pickedPrinters("kotPrinters"),
         profiles: cfg.profiles,
@@ -312,6 +330,9 @@
     document.querySelectorAll("input[name=pcut]").forEach(r => {
       r.addEventListener("change", () => { currentCut = r.value; selectCutUI(currentCut); });
     });
+    document.querySelectorAll("input[name=pkind]").forEach(r => {
+      r.addEventListener("change", () => { currentKind = r.value; selectKindUI(currentKind); });
+    });
     document.querySelectorAll("input[name=pmode]").forEach(r => {
       r.addEventListener("change", () => { currentMode = r.value; selectModeUI(currentMode); });
     });
@@ -321,6 +342,7 @@
       selectTypeUI(cfg.activeType); currentType = cfg.activeType; fillForm(currentType);
       currentMode = cfg.printMode || "raster"; selectModeUI(currentMode);
       currentCut = cfg.cutCommand === "star" ? "star" : "escpos"; selectCutUI(currentCut);
+      currentKind = cfg.printerType === "star" ? "star" : "escpos"; selectKindUI(currentKind);
       renderPrinterList("billPrinters", cfg.billPrinters || []);
       renderPrinterList("kotPrinters", cfg.kotPrinters || []);
       setStatus("Saved ✓ (" + cfg.activeType + ", " + (currentMode === "escpos" ? "ESC/POS" : "Raster") + ")", "ok");
@@ -410,6 +432,8 @@
       selectModeUI(currentMode);
       currentCut = cfg.cutCommand === "star" ? "star" : "escpos";
       selectCutUI(currentCut);
+      currentKind = cfg.printerType === "star" ? "star" : "escpos";
+      selectKindUI(currentKind);
       renderLayoutStatus(await window.printSettings.layoutStatus());
       await loadPrinters();
     })();

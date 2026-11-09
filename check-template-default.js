@@ -25,6 +25,7 @@ function loadLegacy(activeType) {
   const code = src.slice(start, end);
   const sandbox = {
     Buffer,
+    BillTemplate,
     printConfig: { activeType },
     escposCharsPerLine: () => (activeType === "58mm" ? 32 : 48),
     cutBytes: () => "\x1D\x56\x42\x00",
